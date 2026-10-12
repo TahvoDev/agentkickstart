@@ -5,7 +5,7 @@ mental model and the gotchas.
 
 ## Mental model
 
-- **Build host** = the machine you build on (here: this Ubuntu box).
+- **Build host** = the machine you build on (any host with podman + sudo).
 - **Agent box** = the separate target PC you install onto.
 - Three artifacts, produced on the build host:
 
@@ -38,8 +38,8 @@ LOCAL=1 ./build.sh installer     # prompts for sudo; -> output/install.iso
   `%post` TPM + recovery, first boot reaches `agentbox setup`.
 - Won't show a working **desktop**: the installed box pulls the agent image from
   the registry and `bootc upgrade` points at `localhost` — both fail by design.
-- To boot it you need qemu/virt-manager (+ `swtpm` for the TPM); this box has no
-  `/dev/kvm`, so it's slow — or install to a spare disk.
+- To boot it you need qemu/virt-manager (+ `swtpm` for the TPM); without
+  `/dev/kvm` it's slow — or install to a spare disk.
 
 ### 3) Long term (real deployment)
 1. **Registry** with the images:
@@ -63,7 +63,7 @@ LOCAL=1 ./build.sh installer     # prompts for sudo; -> output/install.iso
 5. **Ops**: back up `/var/lib/agent-vault` + `/etc/agent-vault/master.env`; keep
    the installer's recovery key; TPM PCR-7 changes on firmware/Secure Boot updates.
 
-## Build-host gotchas (this Ubuntu box)
+## Build-host gotchas
 - Rootless podman can't run the builder — it needs to `mount devtmpfs`
   (`mount: /dev: permission denied`). `build.sh` re-runs it under `sudo`.
 - Don't build from inside an unprivileged container (devtmpfs needs real root).
