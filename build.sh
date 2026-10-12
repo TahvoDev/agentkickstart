@@ -20,20 +20,27 @@ ROOT_FS=${ROOT_FS:-xfs}
 HERE=$(cd -- "$(dirname -- "$0")" && pwd)
 SUDO=(); [ "$(id -u)" -eq 0 ] || SUDO=(sudo)
 
+# Optional build tuning, off by default so a plain local build is unchanged:
+#   PODMAN_BUILD_OPTS  extra flags for every `podman build` (e.g. --logfile FILE)
+#   IB_METRICS=1       ask image-builder for per-stage timing (CI)
+read -ra BUILD_OPTS <<<"${PODMAN_BUILD_OPTS:-}"
+IB_ARGS=()
+[ "${IB_METRICS:-0}" = 1 ] && IB_ARGS+=(--with-metrics)
+
 usage() { echo "usage: OWNER=<ns> $0 agent|os|installer" >&2; exit 2; }
 
 case "${1:-}" in
   agent)
     : "${OWNER:?set OWNER to your registry namespace, e.g. OWNER=youruser}"
     img="$REGISTRY/$OWNER/agentbox-agent:$AGENT_TAG"
-    podman build -f "$HERE/agent/Containerfile" -t "$img" "$HERE"
+    podman build "${BUILD_OPTS[@]}" -f "$HERE/agent/Containerfile" -t "$img" "$HERE"
     podman push "$img"
     ;;
 
   os)
     : "${OWNER:?set OWNER to your registry namespace, e.g. OWNER=youruser}"
     img="$REGISTRY/$OWNER/agentbox-os:$OS_TAG"
-    podman build -f "$HERE/os/Containerfile" -t "$img" \
+    podman build "${BUILD_OPTS[@]}" -f "$HERE/os/Containerfile" -t "$img" \
       --build-arg AGENT_IMAGE="$REGISTRY/$OWNER/agentbox-agent:$AGENT_TAG" "$HERE"
     podman push "$img"
     ;;
@@ -44,7 +51,7 @@ case "${1:-}" in
     # The payload is embedded in the ISO's storage and installed by Anaconda.
     if [ "${LOCAL:-0}" = 1 ]; then
       payload_ref="$LOCAL_OS"
-      "${SUDO[@]}" podman build -f "$HERE/os/Containerfile" -t "$payload_ref" "$HERE"
+      "${SUDO[@]}" podman build "${BUILD_OPTS[@]}" -f "$HERE/os/Containerfile" -t "$payload_ref" "$HERE"
     else
       : "${OWNER:?set OWNER (or LOCAL=1 for an offline test build)}"
       payload_ref="$REGISTRY/$OWNER/agentbox-os:$OS_TAG"
@@ -52,7 +59,7 @@ case "${1:-}" in
     fi
 
     iso_img="localhost/agentbox-iso:latest"
-    "${SUDO[@]}" podman build -f "$HERE/os/iso/Containerfile" -t "$iso_img" \
+    "${SUDO[@]}" podman build "${BUILD_OPTS[@]}" -f "$HERE/os/iso/Containerfile" -t "$iso_img" \
       --build-arg PAYLOAD_REF="$payload_ref" "$HERE"
 
     # The builder reads the images from rootful storage; pass registry creds.
@@ -68,7 +75,7 @@ case "${1:-}" in
       -v /var/lib/containers/storage:/var/lib/containers/storage \
       -v "$HERE/output:/output" \
       "$BUILDER_IMAGE" \
-      build --output-dir /output bootc-generic-iso \
+      build "${IB_ARGS[@]}" --output-dir /output bootc-generic-iso \
         --bootc-ref "$iso_img" \
         --bootc-installer-payload-ref "$payload_ref" \
         --bootc-default-fs "$ROOT_FS"

@@ -22,6 +22,10 @@ permissions:
 jobs:
   images:
     runs-on: ubuntu-latest
+    outputs:
+      # The ISO embeds the OS image (not the agent), so an agent-only change
+      # leaves it identical - skip the whole ISO rebuild in that case.
+      os_changed: ${{ steps.os_changes.outputs.changed }}
     env:
       OWNER: ${{ github.repository_owner }}
       # Pre-release tag: the box tracks :edge while testing. Promote a digest
@@ -29,10 +33,33 @@ jobs:
       AGENT_TAG: edge
       OS_TAG: edge
     steps:
+      # Full history so the change-detection step can diff against the pushed
+      # ref's parent.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: lowercase owner (registry refs must be lowercase)
         run: echo "OWNER=${OWNER,,}" >> "$GITHUB_ENV"
+
+      - name: did anything the ISO depends on change?
+        id: os_changes
+        run: |
+          # Manual runs always rebuild; on push, only if os/ or build.sh moved.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            changed=true
+          else
+            before="${{ github.event.before }}"
+            if [ -z "$before" ] || ! git cat-file -e "${before}^{commit}" 2>/dev/null; then
+              changed=true
+            elif git diff --quiet "$before" "$GITHUB_SHA" -- os build.sh; then
+              changed=false
+            else
+              changed=true
+            fi
+          fi
+          echo "os_changed=$changed"
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
 
       - name: podman
         run: command -v podman || { sudo apt-get update && sudo apt-get install -y podman; }
@@ -80,6 +107,9 @@ jobs:
 
   installer:
     needs: images
+    # Skipped on agent-only pushes; the existing `edge` ISO already embeds the
+    # current OS image.
+    if: needs.images.outputs.os_changed == 'true'
     runs-on: ubuntu-latest
     env:
       OWNER: ${{ github.repository_owner }}
@@ -128,6 +158,9 @@ jobs:
           printf '%s' "$CR_TOKEN" | sudo podman login ghcr.io -u '${{ github.actor }}' --password-stdin
 
       - name: build installer ISO
+        env:
+          # image-builder prints per-stage timing at the end of the build.
+          IB_METRICS: "1"
         run: ./build.sh installer
 
       # Publish the ISO on the rolling `edge` prerelease. Create it once, then
