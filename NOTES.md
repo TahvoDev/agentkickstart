@@ -13,7 +13,7 @@ mental model and the gotchas.
   | --- | --- | --- |
   | **agent image** (`ghcr.io/OWNER/agentbox-agent`) | `agent/` | a **registry**; the box pulls it at runtime |
   | **OS image** (`ghcr.io/OWNER/agentbox-os`) | `os/` | a **registry**; the box's `bootc upgrade` pulls it |
-  | **installer ISO** (`output/install.iso`) | `os/installer.toml` | flashed/booted to lay down the OS |
+  | **installer ISO** (`output/install.iso`) | `os/iso/` | flashed/booted to lay down the OS |
 
 - The host OS image is tiny (podman + systemd + quadlets). The XFCE desktop and
   both brokers (Agent Vault, Tailscale) run as **containers**.
@@ -24,8 +24,8 @@ mental model and the gotchas.
 ## Three horizons
 
 ### 1) Now, on the build host (one-time)
-- Nothing to install: **podman + sudo** are all that's needed. No `os/installer.toml`
-  edit — the ISO is generic; the installer asks for everything.
+- Nothing to install: **podman + sudo** are all that's needed; the ISO is
+  generic and the installer asks for everything.
 - Optional: decide the **registry namespace** for real deploys (see §3).
 
 ### 2) Quick test (smallest end-to-end proof, no registry)
@@ -70,31 +70,28 @@ LOCAL=1 ./build.sh installer     # prompts for sudo; -> output/install.iso
 - Don't build from inside an unprivileged container (devtmpfs needs real root).
 
 ## Installer UI: text vs the Cockpit Web UI
-- "Cockpit-installer" is **not** a separate image-builder type. It's Anaconda's
-  **Web UI** (Cockpit-based, shipped in `anaconda-webui`), which Anaconda uses
-  when it's in graphical mode **and** `/usr/share/cockpit/anaconda-webui`
-  exists (Fedora 43+). `cockpit-image-builder` is a *build* UI, unrelated.
-- image-builder boots the installer with **`inst.text`** (text installer), so
-  that's what we get by default.
-- `--text`/`--graphical` are argparse `store_const` ⇒ **last on the cmdline
-  wins**, and `customizations.kernel.append` appends ⇒ `inst.graphical` selects
-  the Web UI. It falls back to text if the Web UI/display isn't available.
-- For a headless box you also want `inst.webui.remote` (Cockpit on :9090;
-  `inst.webui.remote.pin=NNNN` for a PIN), otherwise there's nothing to view.
-- The Web UI has **no SSH-key field either**, so it does not fix the SSH-key
-  prompt problem. Kept as a commented opt-in in `os/installer.toml`.
+- The ISO menu / kernel options live in `os/iso/iso.yaml`; we boot the **text
+  installer** (`inst.text`). Anaconda's Cockpit-based **Web UI** (in
+  `anaconda-webui`, Fedora 43+) is selected with `inst.graphical`; for a headless
+  box add `inst.webui.remote` (Cockpit on :9090, `inst.webui.remote.pin=NNNN`).
+- The Web UI has **no SSH-key field** either, so it does not fix the SSH-key
+  prompt problem (see below).
 
 ## Installer facts (learned the hard way)
-- Image type is **`bootc-installer`** (Anaconda) — `bootc-generic-iso` is
-  non-interactive, so no disk picker. Output is always `install.iso`.
-- The builder needs **both** `--bootc-ref` **and** `--bootc-installer-payload-ref`
-  (both = the OS image) plus `--bootc-pull-container` when pulling from a registry.
-- A custom kickstart `contents` is **incompatible** with a
-  `[[customizations.user]]` stanza ("kickstart users and/or groups are not
-  compatible with user-supplied kickstart content").
-- The installer bakes its payload ref as the box's `bootc upgrade` source — so
-  build it against the real registry ref, not `localhost` (that's the `LOCAL=1`
-  caveat).
+- Use the **`bootc-generic-iso`** image type via `os/iso/` (an installer
+  container built from fedora-bootc + Anaconda). The older **`bootc-installer`**
+  type needs a *native* Fedora build host: its `grub2.iso` stage reads the EFI
+  shim from the build root's `/boot/efi`, which a container build lacks, and
+  Fedora 44 moved the shim to `/usr/lib/efi` (osbuild#2525, the `efi_src_dir`
+  fix was reverted). `bootc-generic-iso` takes the kernel + EFI tree from the
+  installer container instead, so it builds on a hosted `ubuntu-latest` runner.
+- The contract: kernel in `/usr/lib/modules/*/vmlinuz` with `initramfs.img`
+  beside it, shim/grub in `/boot/efi/EFI/$VENDOR` (copy from `/usr/lib/efi`),
+  plus Anaconda and xorriso/squashfs/grub tools. `os/iso/build.sh` does it all.
+- The payload is embedded with `--bootc-installer-payload-ref`; Anaconda installs
+  it (`containers-storage:<ref>`) and `--target-imgref` sets the box's
+  `bootc upgrade` source (`LOCAL=1` leaves it pointing at `localhost`).
+- `image-builder` names the ISO itself; `build.sh` renames it to `install.iso`.
 
 ## SSH keys: no install-time prompt (by design)
 Nothing prompts for an SSH key at install, and that's intentional:
@@ -117,8 +114,11 @@ allows password login, so the very first login uses the installer password.
 ```
 agent/      agent desktop image (Containerfile, opencode.json, nginx.conf, start-agent.sh)
 os/         bootc OS image
-  Containerfile            dnf install + COPY payload + enable units
-  installer.toml           installer blueprint (kickstart: TPM + recovery)
+  Containerfile            COPY payload + enable units
+  iso/                     bootc-generic-iso installer container
+    Containerfile
+    build.sh               Anaconda + EFI tree + kickstart (TPM + recovery)
+    iso.yaml               ISO menu / kernel options
   system/                  host payload, one file per source of truth
 build.sh    agent | os | installer
 ```
