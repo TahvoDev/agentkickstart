@@ -6,14 +6,15 @@
 #   ./build.sh installer                             # build ./output/install.iso
 #
 # agent/os need a registry (the box pulls the agent image at runtime and the OS
-# image is what `bootc upgrade` fetches). installer must run on a Fedora host
-# with image-builder installed (osbuild needs a Fedora build root to find the
-# EFI shim); it pulls the OS ref and writes ./output/install.iso.
+# image is what `bootc upgrade` fetches). installer builds an installer
+# container and turns it into an ISO with the `bootc-generic-iso` image type
+# (needs only podman + sudo); it writes ./output/install.iso.
 set -euo pipefail
 
 REGISTRY=${REGISTRY:-ghcr.io}
 AGENT_TAG=${AGENT_TAG:-latest}
 OS_TAG=${OS_TAG:-latest}
+BUILDER_IMAGE=${BUILDER_IMAGE:-ghcr.io/osbuild/image-builder-cli:latest}
 LOCAL_OS=${LOCAL_OS:-localhost/agentbox-os:latest}
 ROOT_FS=${ROOT_FS:-xfs}
 HERE=$(cd -- "$(dirname -- "$0")" && pwd)
@@ -38,43 +39,39 @@ case "${1:-}" in
     ;;
 
   installer)
-    # The installer bakes its payload ref as the installed system's update
-    # source, so by default it points at the pushed OS image. LOCAL=1 builds
-    # offline from local storage instead (installs fine, but `bootc upgrade`
-    # is left pointing at localhost and won't work).
+    # bootc-generic-iso takes the kernel + EFI tree from an installer container
+    # we build here, so it needs only podman (works in a container / any host).
+    # The payload is embedded in the ISO's storage and installed by Anaconda.
     if [ "${LOCAL:-0}" = 1 ]; then
-      os_ref="$LOCAL_OS"
-      "${SUDO[@]}" podman build -f "$HERE/os/Containerfile" -t "$os_ref" "$HERE"
-      pull=()
+      payload_ref="$LOCAL_OS"
+      "${SUDO[@]}" podman build -f "$HERE/os/Containerfile" -t "$payload_ref" "$HERE"
     else
       : "${OWNER:?set OWNER (or LOCAL=1 for an offline test build)}"
-      os_ref="$REGISTRY/$OWNER/agentbox-os:$OS_TAG"
-      pull=(--bootc-pull-container)
+      payload_ref="$REGISTRY/$OWNER/agentbox-os:$OS_TAG"
+      "${SUDO[@]}" podman pull "$payload_ref"
     fi
 
-    # Requires a native image-builder on a Fedora host: osbuild uses the host
-    # as its build root there, so the grub2.iso stage finds the EFI shim in
-    # /boot/efi. In a container osbuild builds a *separate* root with no Fedora
-    # EFI tree, and the build fails on /boot/efi/EFI/fedora/shimx64.efi -- so a
-    # hosted Ubuntu runner can't build this ISO.
-    command -v image-builder >/dev/null 2>&1 || {
-      echo "agentbox: the installer ISO needs a Fedora host:" >&2
-      echo "  sudo dnf install image-builder  # then re-run on that host" >&2
-      exit 1
-    }
+    iso_img="localhost/agentbox-iso:latest"
+    "${SUDO[@]}" podman build -f "$HERE/os/iso/Containerfile" -t "$iso_img" \
+      --build-arg PAYLOAD_REF="$payload_ref" "$HERE"
 
-    # Registry creds for the OS ref the installer pulls (its own build root).
+    # The builder reads the images from rootful storage; pass registry creds.
     auth=${REGISTRY_AUTH_FILE:-/etc/containers/auth.json}
-    [ -r "$auth" ] || auth=/etc/containers/auth.json
+    authmnt=()
+    if "${SUDO[@]}" test -r "$auth"; then
+      authmnt=(-v "$auth:/etc/containers/auth.json:ro" -e REGISTRY_AUTH_FILE=/etc/containers/auth.json)
+    fi
 
     mkdir -p "$HERE/output"
-    "${SUDO[@]}" env REGISTRY_AUTH_FILE="$auth" \
-      image-builder build --output-dir "$HERE/output" bootc-installer \
-        --bootc-ref "$os_ref" \
-        --bootc-installer-payload-ref "$os_ref" \
-        "${pull[@]}" \
-        --bootc-default-fs "$ROOT_FS" \
-        --blueprint "$HERE/os/installer.toml"
+    "${SUDO[@]}" podman run --rm --privileged \
+      "${authmnt[@]}" \
+      -v /var/lib/containers/storage:/var/lib/containers/storage \
+      -v "$HERE/output:/output" \
+      "$BUILDER_IMAGE" \
+      build --output-dir /output bootc-generic-iso \
+        --bootc-ref "$iso_img" \
+        --bootc-installer-payload-ref "$payload_ref" \
+        --bootc-default-fs "$ROOT_FS"
     echo "wrote $HERE/output/install.iso"
     ;;
 
