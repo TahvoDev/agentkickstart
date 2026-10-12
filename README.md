@@ -75,19 +75,21 @@ with `bootc upgrade`; the agent image updates via `podman-auto-update.timer`.
 ## First boot
 
 Anaconda creates the admin user with a password (it has no SSH-key field), so
-log in with that password and install your key:
+log in with that password first:
 
 ```sh
 ssh you@agentbox                 # password you set during install
-ssh-copy-id you@agentbox         # add your key (optional, then disable password auth)
-sudo agentbox setup              # asks for the 3 API keys, does the rest
+sudo agentbox setup              # prompts for your SSH public key + the 3 API keys
 ```
 
+`setup` installs your SSH key for the admin user and offers to disable password
+logins (key-only). Add more keys later with `sudo agentbox authorize add`.
+
 The disk encryption, TPM binding and recovery key were already done by the
-installer (`/root/recovery-key.txt` on the target). `setup` stores the Anthropic
-key, GitHub token and Tailscale auth key in the local vault, then starts
-Tailscale and the agent desktop. It prints the desktop / Paseo / vault-owner
-passwords **once** — save them.
+installer (`/root/recovery-key.txt` on the target). `setup` also stores the
+Anthropic key, GitHub token and Tailscale auth key in the local vault, then
+starts Tailscale and the agent desktop. It prints the desktop / Paseo /
+vault-owner passwords **once** — save them.
 
 ## Daily use
 

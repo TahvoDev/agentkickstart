@@ -115,9 +115,10 @@ ssh-copy-id you@agentbox        # Fedora sshd defaults to PasswordAuthentication
 # then, for key-only, drop a /etc/ssh/sshd_config.d/50-no-password.conf with
 # PasswordAuthentication no
 ```
-Optional future nicety (still "after install", zero pre-config): have
-`agentbox setup` prompt for the SSH public key on first run and install it,
-then disable password auth.
+**Implemented:** `agentbox setup` calls `authorize` — it prompts for the SSH
+public key, installs it for the sudo user, and offers to disable password auth
+(key-only). `agentbox authorize add` adds more keys later. This is in
+`/usr/bin/agentbox` (the OS image), not the installer, so no pre-build edit.
 
 ## Repo layout
 ```

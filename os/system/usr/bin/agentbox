@@ -1,9 +1,10 @@
 #!/bin/bash
 # agentbox - one command for the whole box.
-#   setup    first run: vault accounts, vaults, credentials, tokens, then up
+#   setup    first run: SSH key (+ optional key-only), vault, credentials, then up
 #   up       sync secrets, restart Tailscale + agent desktop, show status
 #   status | logs | shell
 #   login | logout     owner session for admin work
+#   authorize [add]    install an SSH key for the sudo user; offer key-only
 #   allow <ip|cidr>... extra LAN/tailnet hosts (MCP config is auto-used)
 #   av <args>          agent-vault CLI inside the vault container
 set -uo pipefail
@@ -72,6 +73,7 @@ setup() {
     local a; read -rp "Already set up. Re-run and rotate every token and password? [y/N] " a
     [ "$a" = y ] || return 0
   fi
+  authorize
   systemctl start agent-vault.service || die "vault container failed to start"
   echo "waiting for the vault..."
   for _ in $(seq 60); do curl -s -o /dev/null --max-time 2 "http://127.0.0.1:14321/" && break; sleep 2; done
@@ -214,6 +216,54 @@ allow() {  # allow [ip|cidr ...] | allow clear  - extra egress allowlist
   echo "agentbox: egress allowlist updated"
 }
 
+authorize() {  # authorize [add] - install an SSH key for the sudo user
+  # 'setup' runs this on first boot; also usable on its own. 'add' forces the
+  # key prompt even when the user already has keys.
+  local u=${SUDO_USER:-} home f key a
+  if [ -z "$u" ] || [ "$u" = root ]; then
+    read -rp "Authorize SSH for user (blank to skip): " u
+    [ -n "$u" ] || { echo "agentbox: skipping SSH key"; return 0; }
+    id -u "$u" >/dev/null 2>&1 || die "no such user: $u"
+  fi
+  home=$(getent passwd "$u" | cut -d: -f6)
+  [ -n "$home" ] || die "no home directory for $u"
+  f="$home/.ssh/authorized_keys"
+
+  if [ -s "$f" ] && [ "${1:-}" != add ]; then
+    echo "agentbox: $u already has SSH keys in $f"
+  else
+    read -rp "SSH public key for $u (blank to skip): " key
+    if [ -z "$key" ]; then
+      echo "agentbox: no key given; log in with the password you set at install"
+    else
+      case "$key" in
+        ssh-*|ecdsa-*|sk-*) : ;;
+        *) die "that does not look like an SSH public key" ;;
+      esac
+      install -d -m 700 -o "$u" -g "$u" "$home/.ssh"
+      if grep -qF "$key" "$f" 2>/dev/null; then
+        echo "agentbox: key already present"
+      else
+        printf '%s\n' "$key" >> "$f"
+        chown "$u:$u" "$f"; chmod 600 "$f"
+        echo "agentbox: installed SSH key for $u"
+      fi
+    fi
+  fi
+
+  [ -s "$f" ] || return 0
+  read -rp "Disable SSH password login now (key-only)? [y/N] " a
+  [ "$a" = y ] || return 0
+  if install -d -m 755 /etc/ssh/sshd_config.d 2>/dev/null \
+     && printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\n' \
+          > /etc/ssh/sshd_config.d/50-agentbox-no-password.conf; then
+    systemctl reload sshd 2>/dev/null || systemctl restart sshd 2>/dev/null || true
+    echo "agentbox: password SSH disabled (key-only)"
+  else
+    echo "agentbox: could not write the sshd drop-in (need root)" >&2
+  fi
+}
+
 cmd=${1:-up}; shift || true
 case "$cmd" in
   setup)     setup ;;
@@ -224,7 +274,8 @@ case "$cmd" in
   shell)     exec podman exec -it agentbox bash ;;
   login)     read -rp "Owner email: " e; av auth login --address "$URL" --email "$e" ;;
   logout)    podman exec agent-vault rm -f /data/.agent-vault/session.json ;;
+  authorize) authorize "$@" ;;
   allow)     allow "$@" ;;
   av)        av "$@" ;;
-  *)         die "usage: agentbox setup|up|status|logs|shell|login|logout|allow|av" ;;
+  *)         die "usage: agentbox setup|up|status|logs|shell|login|logout|authorize|allow|av" ;;
 esac
