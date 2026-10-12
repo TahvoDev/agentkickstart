@@ -36,6 +36,18 @@ fetch() {  # fetch <credential>; retries while the vault comes up
   return 1
 }
 
+fetch1() {  # fetch <credential> once, empty if absent (optional creds)
+  podman exec -e AGENT_VAULT_ADDR="$URL" -e AGENT_VAULT_TOKEN \
+    agent-vault agent-vault vault credential get "$1" --vault "$BOOT_VAULT" 2>/dev/null || true
+}
+
+registry_auth() {  # <user> <token> - pull creds for root podman (agent) + bootc (OS)
+  local b64; b64=$(printf '%s:%s' "$1" "$2" | base64 -w0)
+  install -d /etc/containers /etc/ostree
+  ( umask 077; printf '{"auths":{"ghcr.io":{"auth":"%s"}}}\n' "$b64" > /etc/containers/auth.json )
+  install -m 0600 /etc/containers/auth.json /etc/ostree/auth.json
+}
+
 write() {  # write <name> <content>  (atomic, 0600, root-owned)
   ( umask 077; printf '%s\n' "$2" > "$CONF/$1.tmp" ) && mv "$CONF/$1.tmp" "$CONF/$1"
 }
@@ -61,6 +73,14 @@ provision() {
   else
     die "could not fetch secrets and none are cached"
   fi
+
+  # Pull creds for private images (absent = packages are public).
+  local gu gt
+  gu=$(fetch1 GHCR_USER); gt=$(fetch1 GHCR_PULL_TOKEN)
+  if [ -n "$gu" ] && [ -n "$gt" ]; then
+    registry_auth "$gu" "$gt"
+    echo "agentbox: registry pull credentials written"
+  fi
 }
 
 mint() {  # mint <agent-name> <vault:role>  -> token on stdout
@@ -79,12 +99,19 @@ setup() {
   for _ in $(seq 60); do curl -s -o /dev/null --max-time 2 "http://127.0.0.1:14321/" && break; sleep 2; done
   curl -s -o /dev/null --max-time 2 "http://127.0.0.1:14321/" || die "vault is not answering"
 
-  local email anthropic gh ts opw
+  local email anthropic gh ts opw gh_user gh_tok
   read -rp  "Vault owner email [owner@agentbox.local]: " email; email=${email:-owner@agentbox.local}
   read -rsp "Anthropic API key: " anthropic; echo
   read -rsp "GitHub token (fine-grained, repo-scoped): " gh; echo
   read -rsp "Tailscale auth key (tagged tag:agentbox): " ts; echo
   [ -n "$anthropic" ] && [ -n "$gh" ] && [ -n "$ts" ] || die "all three keys are required"
+
+  # Private images need pull creds on the box; skip if the packages are public.
+  read -rp  "GHCR username for private image pulls (blank if public): " gh_user
+  if [ -n "$gh_user" ]; then
+    read -rsp "GHCR read-only pull token (Packages: read): " gh_tok; echo
+    [ -n "$gh_tok" ] || die "pull token required when a username is given"
+  fi
 
   # First registered user becomes the owner. On a re-run "register" is
   # a no-op that still exits 0, so detect an existing owner by trying
@@ -133,6 +160,10 @@ EOF
   dpw=$(rand); ppw=$(rand)
   av vault credential set TS_AUTHKEY="$ts" PASEO_PASSWORD="$ppw" PASSWORD="$dpw" \
      AGENT_VAULT_PROXY_TOKEN="$ptok" --vault "$BOOT_VAULT" >/dev/null || die "could not store box secrets"
+  if [ -n "$gh_user" ]; then
+    av vault credential set GHCR_USER="$gh_user" GHCR_PULL_TOKEN="$gh_tok" --vault "$BOOT_VAULT" >/dev/null \
+      || die "could not store GHCR pull credentials"
+  fi
   write bootstrap.env "AGENT_VAULT_BOOTSTRAP_TOKEN=$mtok"
 
   # Lock the vault down and leave no owner session on disk.

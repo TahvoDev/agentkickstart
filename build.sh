@@ -35,7 +35,8 @@ case "${1:-}" in
   os)
     : "${OWNER:?set OWNER to your registry namespace, e.g. OWNER=youruser}"
     img="$REGISTRY/$OWNER/agentbox-os:$OS_TAG"
-    podman build -f "$HERE/os/Containerfile" -t "$img" "$HERE"
+    podman build -f "$HERE/os/Containerfile" -t "$img" \
+      --build-arg AGENT_IMAGE="$REGISTRY/$OWNER/agentbox-agent:$AGENT_TAG" "$HERE"
     podman push "$img"
     ;;
 

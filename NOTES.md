@@ -48,11 +48,17 @@ LOCAL=1 ./build.sh installer     # prompts for sudo; -> output/install.iso
    OWNER=<namespace> ./build.sh os        # push OS image
    OWNER=<namespace> ./build.sh installer # pulls OS ref; bakes it as update source
    ```
-   Pushing to GHCR needs a token with **`write:packages`** (the local GitHub App
-   token is git/API-only — use a PAT or your own registry).
-2. **CI**: on tag, build+push both images; publish `install.iso` as a release.
+   Pushing to GHCR needs **`packages: write`**. The local GitHub App token can
+   log in but **cannot create packages** (`installation not allowed to Create
+   organization package`) — so push from **CI**, whose built-in `GITHUB_TOKEN`
+   has it (no PAT). See `.github/workflows/build.yml`; it tags `:edge` while
+   testing.
+2. **CI**: `.github/workflows/build.yml` builds+pushes both images on `main`,
+   uploads `install.iso` as an artifact.
 3. **Runtime updates**: `bootc upgrade` (OS) + `podman-auto-update.timer` (agent).
-4. **Private registry** → give the box pull creds (`/etc/ostree/auth.json` + podman auth).
+4. **Private packages** → `agentbox setup` takes a GHCR username + read-only
+   token, stores them in the vault; `provision` writes `/etc/containers/auth.json`
+   + `/etc/ostree/auth.json` for root podman and bootc.
 5. **Ops**: back up `/var/lib/agent-vault` + `/etc/agent-vault/master.env`; keep
    the installer's recovery key; TPM PCR-7 changes on firmware/Secure Boot updates.
 

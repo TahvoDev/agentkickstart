@@ -20,6 +20,12 @@ COPY os/system/ /
 # the containers may reach, so bake a copy on the host too.
 COPY agent/opencode.json /etc/agentbox/opencode.json
 
+# Point the agent quadlet at the real agent image (build.sh passes this). The
+# checked-in value is a placeholder so a plain `podman build` stays valid.
+ARG AGENT_IMAGE=ghcr.io/OWNER/agentbox-agent:latest
+RUN sed -i "s|^Image=ghcr.io/OWNER/agentbox-agent:latest\$|Image=${AGENT_IMAGE}|" \
+      /etc/containers/systemd/agentbox.container
+
 RUN systemctl enable \
       agentbox-firewall.service agent-vault-init.service \
       agentbox-provision.service podman-auto-update.timer sshd.service \
