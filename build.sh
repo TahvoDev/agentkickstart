@@ -6,17 +6,14 @@
 #   ./build.sh installer                             # build ./output/install.iso
 #
 # agent/os need a registry (the box pulls the agent image at runtime and the OS
-# image is what `bootc upgrade` fetches). installer is a purely local build: it
-# compiles the OS image into rootful podman storage and feeds it to the
-# image-builder container, so no registry is required.
-#
-# Edit os/installer.toml (admin user + SSH key) before building the ISO.
+# image is what `bootc upgrade` fetches). installer must run on a Fedora host
+# with image-builder installed (osbuild needs a Fedora build root to find the
+# EFI shim); it pulls the OS ref and writes ./output/install.iso.
 set -euo pipefail
 
 REGISTRY=${REGISTRY:-ghcr.io}
 AGENT_TAG=${AGENT_TAG:-latest}
 OS_TAG=${OS_TAG:-latest}
-BUILDER_IMAGE=${BUILDER_IMAGE:-registry.fedoraproject.org/fedora:43}
 LOCAL_OS=${LOCAL_OS:-localhost/agentbox-os:latest}
 ROOT_FS=${ROOT_FS:-xfs}
 HERE=$(cd -- "$(dirname -- "$0")" && pwd)
@@ -55,46 +52,29 @@ case "${1:-}" in
       pull=(--bootc-pull-container)
     fi
 
-    # osbuild's grub2.iso stage reads the Fedora EFI shim from /boot/efi. Run
-    # the build inside a Fedora container with image-builder + the EFI packages
-    # installed, so the environment osbuild runs in is Fedora. On a bare Ubuntu
-    # runner (and in the image-builder-cli container) there is no Fedora EFI
-    # tree, and the stage fails on /boot/efi/EFI/fedora/shimx64.efi.
-    #
-    # No-op chcon/restorecon shims: osbuild relabels its store at startup,
-    # which fails on hosts without SELinux (Ubuntu).
-    shim=$(mktemp -d); trap 'rm -rf "$shim"' EXIT
-    for c in chcon restorecon fixfiles setfiles matchpathcon selabel; do
-      printf '#!/bin/sh\nexit 0\n' > "$shim/$c"; chmod +x "$shim/$c"
-    done
+    # Requires a native image-builder on a Fedora host: osbuild uses the host
+    # as its build root there, so the grub2.iso stage finds the EFI shim in
+    # /boot/efi. In a container osbuild builds a *separate* root with no Fedora
+    # EFI tree, and the build fails on /boot/efi/EFI/fedora/shimx64.efi -- so a
+    # hosted Ubuntu runner can't build this ISO.
+    command -v image-builder >/dev/null 2>&1 || {
+      echo "agentbox: the installer ISO needs a Fedora host:" >&2
+      echo "  sudo dnf install image-builder  # then re-run on that host" >&2
+      exit 1
+    }
 
-    # Hand the builder registry creds for the OS ref it pulls. Use the caller's
-    # ($REGISTRY_AUTH_FILE) if set, else root's.
+    # Registry creds for the OS ref the installer pulls (its own build root).
     auth=${REGISTRY_AUTH_FILE:-/etc/containers/auth.json}
-    authmnt=()
-    if "${SUDO[@]}" test -r "$auth"; then
-      authmnt=(-v "$auth:/etc/containers/auth.json:ro" -e REGISTRY_AUTH_FILE=/etc/containers/auth.json)
-    fi
+    [ -r "$auth" ] || auth=/etc/containers/auth.json
 
-    # Rootful + --privileged (osbuild mounts devtmpfs/loop); share the rootful
-    # store so image-builder reuses the pulled OS image.
     mkdir -p "$HERE/output"
-    "${SUDO[@]}" podman run --rm --privileged \
-      "${authmnt[@]}" \
-      -v /var/lib/containers/storage:/var/lib/containers/storage \
-      -v "$HERE/output:/output" \
-      -v "$HERE/os/installer.toml:/installer.toml:ro" \
-      -v "$shim:/shim:ro" \
-      -e PATH=/shim:/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin \
-      "$BUILDER_IMAGE" \
-      bash -euc "
-        dnf -y install image-builder osbuild-selinux podman shim-x64 grub2-efi-x64 >&2
-        image-builder build --output-dir /output bootc-installer \
-          --bootc-ref '$os_ref' \
-          --bootc-installer-payload-ref '$os_ref' ${pull[*]} \
-          --bootc-default-fs '$ROOT_FS' \
-          --blueprint /installer.toml
-      "
+    "${SUDO[@]}" env REGISTRY_AUTH_FILE="$auth" \
+      image-builder build --output-dir "$HERE/output" bootc-installer \
+        --bootc-ref "$os_ref" \
+        --bootc-installer-payload-ref "$os_ref" \
+        "${pull[@]}" \
+        --bootc-default-fs "$ROOT_FS" \
+        --blueprint "$HERE/os/installer.toml"
     echo "wrote $HERE/output/install.iso"
     ;;
 

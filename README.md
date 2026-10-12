@@ -55,19 +55,24 @@ dispatch):
   GHCR namespace. It authenticates with the workflow's built-in `GITHUB_TOKEN`
   (`packages: write`) — no PAT, no stored secret.
 - **installer** builds `install.iso` and uploads it as an artifact. It needs a
-  **Fedora** host: osbuild's `grub2.iso` stage reads the Fedora EFI shim from
-  `/boot/efi`, which a container on a non-Fedora runner doesn't have. So it
-  runs on a self-hosted runner labelled `fedora` (podman + passwordless sudo):
+  **native Fedora** environment with `image-builder`: osbuild runs with the
+  *host* as its build root there, so `grub2.iso` finds the EFI shim in
+  `/boot/efi`. In a container osbuild builds a *separate* root with no Fedora
+  EFI tree, so a hosted Ubuntu runner (or the old image-builder-cli container)
+  cannot build the ISO.
+
+  Self-hosted runner labelled `fedora`:
 
   ```sh
   # on a Fedora box: https://github.com/TahvoDev/agentkickstart/settings/actions/runners/new
+  sudo dnf install -y podman image-builder
+  echo "$USER ALL=(root) NOPASSWD: /usr/bin/podman" | sudo tee /etc/sudoers.d/agentbox-runner
   ./config.sh --url https://github.com/TahvoDev/agentkickstart --token <TOKEN> --labels fedora
   sudo ./svc.sh install && sudo ./svc.sh start
   ```
 
-  Or build it by hand on any Fedora host (needs podman + sudo): `sudo dnf
-  install podman`, log in to GHCR, then `OWNER=tahvodev REGISTRY_AUTH_FILE=…
-  ./build.sh installer`.
+  Or build by hand on any Fedora host: `sudo dnf install podman image-builder`,
+  log in to GHCR, then `OWNER=tahvodev ./build.sh installer`.
 
 While testing it publishes the moving tag `:edge` (the box's quadlets/upgrade
 track it); promote a digest to `:latest` and/or flip the packages public at
@@ -82,22 +87,17 @@ with `bootc upgrade`; the agent image updates via `podman-auto-update.timer`.
 
 ### Requirements for the build host
 
-- **podman**, and **`sudo`** for the `installer` step. The `image-builder`
-  container mounts `devtmpfs` and writes an OS image, so it must run *rootful*
-  (`build.sh` re-runs it under `sudo` via `$SUDO`). Rootless podman cannot do
-  this — a rootless run fails with `mount: /dev: permission denied`.
-- **No SELinux required.** On hosts without it (e.g. Ubuntu) `build.sh` shims
-  `chcon`/`restorecon` out of the builder, which otherwise fails trying to
-  relabel its store (`chcon: … Operation not permitted`).
+- **agent**/**os** need only **podman** (any host).
+- **installer** needs a **Fedora** host with **`image-builder`** and **`sudo`**
+  — osbuild must run natively (host as build root) to find the EFI shim.
 - The `agent`/`os` steps push to `$REGISTRY/$OWNER`; the box pulls the agent
   image from there at runtime, and `bootc upgrade` pulls the OS image.
 - `installer` embeds the OS image and records its ref as the installed box's
   update source, so run `./build.sh os` first — it pulls the pushed image by
-  default. For an **offline smoke test**, `LOCAL=1 ./build.sh installer` builds
-  the OS image from local storage instead (it installs fine, but `bootc upgrade`
-  is left pointing at `localhost` and won't work).
-- Don't run the build from inside an unprivileged container: the `devtmpfs`
-  mount needs real root.
+  default (`REGISTRY_AUTH_FILE`/root's auth must be able to read it). For an
+  **offline smoke test**, `LOCAL=1 ./build.sh installer` builds the OS image
+  from local storage instead (installs fine, but `bootc upgrade` is left
+  pointing at `localhost`).
 
 ## First boot
 
