@@ -120,5 +120,16 @@ os/         bootc OS image
     build.sh               Anaconda + EFI tree + kickstart (TPM + recovery)
     iso.yaml               ISO menu / kernel options
   system/                  host payload, one file per source of truth
+    usr/bin/               agentbox CLI + agentbox-egress
+    usr/lib/systemd/       units + logind drop-in
+    usr/lib/tmpfiles.d/    volume/config dirs
+    usr/lib/bootc/install/ bootc install defaults (root fs)
+    usr/share/containers/systemd/  quadlets
+    usr/share/agentbox/    static firewall policy + MCP config
+    etc/tailscale/serve/   tailnet HTTPS routes (mounted into the container)
 build.sh    agent | os | installer
 ```
+
+Static image payload lives in `/usr` (immutable, versioned); `/etc` holds only
+runtime state (`/etc/agentbox/*.env`, generated `firewall.{mcp,allow}.nft`,
+`/etc/agent-vault/master.env`), created at boot by tmpfiles/the CLI.
