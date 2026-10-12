@@ -72,6 +72,10 @@ case "${1:-}" in
         --bootc-ref "$iso_img" \
         --bootc-installer-payload-ref "$payload_ref" \
         --bootc-default-fs "$ROOT_FS"
+
+    # image-builder names the artifact itself; give it our canonical name.
+    built=$(ls -1t "$HERE/output/"*.iso 2>/dev/null | head -n1)
+    [ -n "$built" ] && mv -f "$built" "$HERE/output/install.iso"
     echo "wrote $HERE/output/install.iso"
     ;;
 
