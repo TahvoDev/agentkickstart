@@ -63,6 +63,21 @@ LOCAL=1 ./build.sh installer     # prompts for sudo; -> output/install.iso
   shims `chcon`/`restorecon`/`fixfiles` out of the builder image.
 - Don't build from inside an unprivileged container (devtmpfs needs real root).
 
+## Installer UI: text vs the Cockpit Web UI
+- "Cockpit-installer" is **not** a separate image-builder type. It's Anaconda's
+  **Web UI** (Cockpit-based, shipped in `anaconda-webui`), which Anaconda uses
+  when it's in graphical mode **and** `/usr/share/cockpit/anaconda-webui`
+  exists (Fedora 43+). `cockpit-image-builder` is a *build* UI, unrelated.
+- image-builder boots the installer with **`inst.text`** (text installer), so
+  that's what we get by default.
+- `--text`/`--graphical` are argparse `store_const` ⇒ **last on the cmdline
+  wins**, and `customizations.kernel.append` appends ⇒ `inst.graphical` selects
+  the Web UI. It falls back to text if the Web UI/display isn't available.
+- For a headless box you also want `inst.webui.remote` (Cockpit on :9090;
+  `inst.webui.remote.pin=NNNN` for a PIN), otherwise there's nothing to view.
+- The Web UI has **no SSH-key field either**, so it does not fix the SSH-key
+  prompt problem. Kept as a commented opt-in in `os/installer.toml`.
+
 ## Installer facts (learned the hard way)
 - Image type is **`bootc-installer`** (Anaconda) — `bootc-generic-iso` is
   non-interactive, so no disk picker. Output is always `install.iso`.

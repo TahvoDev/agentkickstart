@@ -14,6 +14,18 @@
 # password auth off if you want key-only. (A custom kickstart `contents` is
 # also incompatible with a [[customizations.user]] stanza, so the user cannot
 # be declared here anyway.)
+#
+# UI: image-builder boots this ISO with "inst.text" (the text installer).
+# Anaconda offers a newer Cockpit-based Web UI, chosen automatically when it is
+# in graphical mode *and* the anaconda-webui package is present (Fedora 43+).
+# Because --text/--graphical are last-wins, appending "inst.graphical" selects
+# it; it falls back to text if the Web UI is unavailable. For a headless box add
+# "inst.webui.remote" so you can drive the install from a browser (Cockpit on
+# :9090) instead of a local display; "inst.webui.remote.pin=NNNN" requires a PIN.
+# NOTE: the Web UI has no SSH-key field either, so it does not change the above.
+#
+# [customizations.kernel]
+# append = "inst.graphical"
 
 [customizations.installer.kickstart]
 contents = """
