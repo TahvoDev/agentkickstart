@@ -12,7 +12,7 @@ Three artifacts, one repo:
 | --- | --- | --- |
 | **agent image** (`ghcr.io/OWNER/agentbox-agent`) | `agent/` | pulled by the box at runtime |
 | **OS image** (`ghcr.io/OWNER/agentbox-os`) | `os/` | installed by the installer ISO |
-| **installer ISO** (`output/install.iso`) | `os/installer.toml` | booted to install the OS image |
+| **installer ISO** (`output/install.iso`) | `os/iso/` | booted to install the OS image |
 
 ## Layout
 
@@ -23,8 +23,8 @@ agent/                     the agent desktop container image
   nginx.conf
   start-agent.sh
 os/                        the bootc OS image
-  Containerfile            packages + COPY the payload + enable units
-  installer.toml           installer blueprint (kickstart: TPM + recovery; user chosen at install)
+  Containerfile            COPY the payload + enable units
+  iso/                     bootc-generic-iso installer container (Anaconda + kickstart)
   system/                  the host payload, one file per source of truth
     usr/bin/agentbox           the one CLI (setup/up/status/authorize/allow/...)
     usr/bin/agentbox-egress    derives the LAN allowlist from the MCP config
@@ -54,25 +54,12 @@ dispatch):
 - **images** (hosted `ubuntu-latest`) builds and pushes both images to your
   GHCR namespace. It authenticates with the workflow's built-in `GITHUB_TOKEN`
   (`packages: write`) — no PAT, no stored secret.
-- **installer** builds `install.iso` and uploads it as an artifact. It needs a
-  **native Fedora** environment with `image-builder`: osbuild runs with the
-  *host* as its build root there, so `grub2.iso` finds the EFI shim in
-  `/boot/efi`. In a container osbuild builds a *separate* root with no Fedora
-  EFI tree, so a hosted Ubuntu runner (or the old image-builder-cli container)
-  cannot build the ISO.
-
-  Self-hosted runner labelled `fedora`:
-
-  ```sh
-  # on a Fedora box: https://github.com/TahvoDev/agentkickstart/settings/actions/runners/new
-  sudo dnf install -y podman image-builder
-  echo "$USER ALL=(root) NOPASSWD: /usr/bin/podman" | sudo tee /etc/sudoers.d/agentbox-runner
-  ./config.sh --url https://github.com/TahvoDev/agentkickstart --token <TOKEN> --labels fedora
-  sudo ./svc.sh install && sudo ./svc.sh start
-  ```
-
-  Or build by hand on any Fedora host: `sudo dnf install podman image-builder`,
-  log in to GHCR, then `OWNER=tahvodev ./build.sh installer`.
+- **installer** builds `install.iso` and uploads it as an artifact, also on
+  `ubuntu-latest`. It uses the `bootc-generic-iso` image type, which takes the
+  kernel + EFI tree from an **installer container** (`os/iso`) that we build
+  (Anaconda + the Fedora 44 `/usr/lib/efi` → `/boot/efi` copy). Unlike the
+  older `bootc-installer` type it does not need a Fedora build host, so it
+  builds anywhere with podman + sudo.
 
 While testing it publishes the moving tag `:edge` (the box's quadlets/upgrade
 track it); promote a digest to `:latest` and/or flip the packages public at
@@ -87,9 +74,9 @@ with `bootc upgrade`; the agent image updates via `podman-auto-update.timer`.
 
 ### Requirements for the build host
 
-- **agent**/**os** need only **podman** (any host).
-- **installer** needs a **Fedora** host with **`image-builder`** and **`sudo`**
-  — osbuild must run natively (host as build root) to find the EFI shim.
+- **agent**/**os**/**installer** need only **podman**, plus **`sudo`** for
+  `installer` (it builds and mounts into rootful podman storage). Any host
+  works; the ISO's EFI/kernel come from the installer container, not the host.
 - The `agent`/`os` steps push to `$REGISTRY/$OWNER`; the box pulls the agent
   image from there at runtime, and `bootc upgrade` pulls the OS image.
 - `installer` embeds the OS image and records its ref as the installed box's
