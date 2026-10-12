@@ -10,7 +10,7 @@ Before=tailscale.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/sbin/setsebool container_use_devices=on
+ExecStart=/usr/sbin/setsebool -P container_use_devices=on
 
 [Install]
 WantedBy=multi-user.target

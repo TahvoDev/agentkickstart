@@ -15,8 +15,8 @@ AddCapability=NET_RAW
 # No SecurityLabelDisable: agentbox-selinux.service turns on the
 # container_use_devices boolean so a container that explicitly adds a device
 # can open it, while SELinux stays enforcing.
-# State dir is private-labeled; the serve config is staged into it by
-# agentbox-tailscale-serve.service (so tailscale.env stays out of the mount).
+# The state dir is private-labeled :Z and agentbox-tailscale-serve.service
+# stages the serve config into it, so nothing is mounted from the host.
 Volume=/var/lib/tailscale:/var/lib/tailscale:Z
 Environment=TS_HOSTNAME=agentbox
 Environment=TS_STATE_DIR=/var/lib/tailscale
