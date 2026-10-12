@@ -19,8 +19,8 @@
 #
 #  DAILY:   sudo agentbox up | status | logs | shell
 #  ADMIN:   sudo agentbox login | logout | av <agent-vault args>
-#           sudo agentbox allow <ip|cidr>...   # let an MCP reach a LAN/tailnet host
-#           sudo agentbox allow clear          # revoke all of them
+#           sudo agentbox allow <ip|cidr>...   # extra hosts MCP config can't express
+#           sudo agentbox allow clear          # revoke all manual entries
 #
 #  URLS (tailnet only):
 #    https://agentbox.<tailnet>.ts.net         Paseo
@@ -33,8 +33,9 @@
 #    - Agent container: uid 10001, no caps, no-new-privileges, no sudo.
 #      Holds dummy API keys + a proxy-role token (cannot read values).
 #    - nftables: containers cannot reach your LAN, the tailnet, link-local
-#      or the host itself (DNS excepted). Internet only, unless you opt a
-#      specific destination in: `agentbox allow <ip|cidr>...`.
+#      or the host itself (DNS excepted). Internet only, plus whatever the
+#      enabled MCP servers point at (auto-derived from opencode.json); add
+#      more with `agentbox allow <ip|cidr>...`.
 #    - Desktop sits behind nginx basic auth AND Tailscale ACLs.
 #    - No secret in the ignition; vault is invite-only after setup and the
 #      owner session is wiped from disk when setup finishes.
@@ -442,12 +443,16 @@ storage:
           add table inet agentbox
           delete table inet agentbox
           table inet agentbox {
-            set allow_lan  { type ipv4_addr; flags interval; }
-            set allow_lan6 { type ipv6_addr; flags interval; }
+            set allow_lan       { type ipv4_addr; }
+            set allow_lan_cidr  { type ipv4_addr; flags interval; }
+            set allow_lan6      { type ipv6_addr; }
+            set allow_lan6_cidr { type ipv6_addr; flags interval; }
             chain forward {
               type filter hook forward priority -10; policy accept;
-              iifname "agentbox0" oifname != "agentbox0" ip  daddr @allow_lan  accept
-              iifname "agentbox0" oifname != "agentbox0" ip6 daddr @allow_lan6 accept
+              iifname "agentbox0" oifname != "agentbox0" ip  daddr @allow_lan       accept
+              iifname "agentbox0" oifname != "agentbox0" ip  daddr @allow_lan_cidr  accept
+              iifname "agentbox0" oifname != "agentbox0" ip6 daddr @allow_lan6      accept
+              iifname "agentbox0" oifname != "agentbox0" ip6 daddr @allow_lan6_cidr accept
               iifname "agentbox0" oifname != "agentbox0" ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16 } drop
               iifname "agentbox0" oifname != "agentbox0" ip6 daddr { fc00::/7, fe80::/10 } drop
             }
@@ -460,6 +465,79 @@ storage:
             }
           }
 
+    # Derive the allowlist from the MCP servers themselves, so an MCP pointed
+    # at a LAN/tailnet host just works with no extra step. Runs before the
+    # firewall loads (see agentbox-firewall.service).
+    - path: /usr/local/bin/agentbox-egress
+      mode: 0755
+      contents:
+        inline: |
+          #!/bin/bash
+          # agentbox-egress - allow the LAN/tailnet hosts the configured MCP
+          # servers point at, so pointing an MCP at a local service (Home
+          # Assistant, a LAN model server, a NAS, another tailnet host) needs
+          # no extra step.
+          #
+          # Reads the enabled MCPs in opencode.json and extracts every address
+          # they mention - a remote MCP's url host, an address in an MCP's
+          # environment, or a command argument - resolving url hostnames.
+          # Only addresses in the ranges the base firewall blocks are emitted
+          # (public hosts are already reachable). Writes firewall.mcp.nft,
+          # which agentbox-firewall.service loads. `agentbox allow` still adds
+          # extra destinations on top.
+          set -uo pipefail
+
+          CFG=${1:-/etc/agentbox/image/opencode.json}
+          OUT=/etc/agentbox/firewall.mcp.nft
+          tmp=$(mktemp) || exit 0
+          trap 'rm -f "$tmp"' EXIT
+          command -v jq >/dev/null 2>&1 && [ -r "$CFG" ] || { rm -f "$OUT"; exit 0; }
+
+          # Every string an enabled MCP carries.
+          cand=$(jq -r '
+            .mcp // {} | to_entries[]
+            | select(.value.enabled != false)
+            | .value
+            | ( .url // empty ),
+              ( ( .environment // {} )[]? ),
+              ( ( .command // [] )[]? )
+          ' "$CFG" 2>/dev/null) || cand=
+
+          priv4='^(10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2[0-9]|3[01])\.|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.)'
+
+          v4=$(printf '%s\n' "$cand" \
+                 | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?' | grep -E "$priv4")
+          v6=$(printf '%s\n' "$cand" \
+                 | grep -oiE '[0-9a-f]{0,4}(:[0-9a-f]{0,4}){2,}(/[0-9]{1,3})?' | grep -iE '^(f[cd]|fe[89ab])')
+
+          # url hostnames -> their addresses (best effort).
+          for raw in $(printf '%s\n' "$cand" | grep -oE 'https?://[^/"?[:space:]]+'); do
+            h=$(printf '%s' "$raw" | sed -E 's#^https?://##; s#^\[([^]]+)\].*#\1#; s#:[0-9]+$##')
+            [ -n "$h" ] || continue
+            printf '%s' "$h" | grep -qE '^[0-9]+(\.[0-9]+){3}$|:' && continue  # IP literal
+            for a in $(timeout 5 getent ahostsv4 "$h" 2>/dev/null | awk '{print $1}' | sort -u); do
+              printf '%s\n' "$a" | grep -qE "$priv4" && v4="$v4
+          $a"
+            done
+          done
+
+          v4=$(printf '%s\n' "$v4" | tr ' ' '\n' | sort -u | grep -v '^$')
+          v6=$(printf '%s\n' "$v6" | tr ' ' '\n' | sort -u | grep -v '^$')
+
+          emit() {  # emit <set> <newline-separated tokens>
+            local set=$1 el
+            el=$(printf '%s\n' "$2" | grep -v '^$' | paste -sd, -)
+            [ -n "$el" ] && echo "add element inet agentbox $set { $el }"
+            return 0
+          }
+          {
+            emit allow_lan       "$(printf '%s\n' "$v4" | grep -v '/')"
+            emit allow_lan_cidr  "$(printf '%s\n' "$v4" | grep    '/')"
+            emit allow_lan6      "$(printf '%s\n' "$v6" | grep -v '/')"
+            emit allow_lan6_cidr "$(printf '%s\n' "$v6" | grep    '/')"
+          } > "$tmp"
+          mv "$tmp" "$OUT"
+
     # ---------------- The one script ----------------
     - path: /usr/local/bin/agentbox
       mode: 0755
@@ -471,7 +549,7 @@ storage:
           #   up       sync secrets, restart Tailscale + agent desktop, show status
           #   status | logs | shell
           #   login | logout     owner session for admin work
-          #   allow <ip|cidr>... let the agent reach specific LAN/tailnet hosts
+          #   allow <ip|cidr>... extra LAN/tailnet hosts (MCP config is auto-used)
           #   av <args>          agent-vault CLI inside the vault container
           set -uo pipefail
           [ "$EUID" -eq 0 ] || exec sudo "$0" "$@"
@@ -646,6 +724,7 @@ storage:
 
           up() {
             provision || exit 1
+            systemctl restart agentbox-firewall.service
             systemctl restart tailscale.service agentbox.service
             echo "waiting for Paseo + desktop..."
             for _ in $(seq 60); do
@@ -655,7 +734,9 @@ storage:
             status
           }
 
-          allow() {  # allow [ip|cidr ...] | allow clear  - LAN/tailnet egress allowlist
+          allow() {  # allow [ip|cidr ...] | allow clear  - extra egress allowlist
+            # Destinations the MCP config can't express (shared services, bare
+            # hostnames). The MCP-derived list is separate and always applied.
             local f=$CONF/firewall.allow.nft d
             if [ $# -eq 0 ]; then
               if [ -s "$f" ]; then cat "$f"; else echo "no LAN/tailnet destinations allowed"; fi
@@ -667,10 +748,10 @@ storage:
               { echo "# LAN/tailnet destinations the agent container may reach."
                 echo "# Regenerated by 'agentbox allow'; reload: systemctl restart agentbox-firewall"
                 for d in "$@"; do
-                  case "$d" in
-                    *:*) echo "add element inet agentbox allow_lan6 { $d }" ;;
-                    *)   echo "add element inet agentbox allow_lan  { $d }" ;;
-                  esac
+                  local fam=lan
+                  case "$d" in *:*) fam=lan6 ;; esac
+                  case "$d" in */*) fam="${fam}_cidr" ;; esac
+                  echo "add element inet agentbox allow_${fam} { $d }"
                 done
               } > "$f"
             fi
@@ -715,14 +796,18 @@ systemd:
       contents: |
         [Unit]
         Description=agentbox container network isolation
-        After=network-pre.target
+        # After the network so url hostnames in the MCP config can be resolved.
+        Wants=network-online.target
+        After=network-online.target
         Before=agent-vault.service agentbox.service
 
         [Service]
         Type=oneshot
         RemainAfterExit=yes
-        # Base policy, then the optional allowlist written by `agentbox allow`.
-        ExecStart=/bin/bash -c 'set -e; /usr/sbin/nft -f /etc/agentbox/firewall.nft; if [ -s /etc/agentbox/firewall.allow.nft ]; then /usr/sbin/nft -f /etc/agentbox/firewall.allow.nft; fi'
+        # Derive the MCP allowlist, then apply base policy + derived + manual
+        # (`agentbox allow`) overlays as one atomic nft transaction, so a bad
+        # allowlist cannot leave the table missing or half-applied.
+        ExecStart=/bin/bash -c '/usr/local/bin/agentbox-egress || true; { for f in /etc/agentbox/firewall.nft /etc/agentbox/firewall.mcp.nft /etc/agentbox/firewall.allow.nft; do if [ -s "$f" ]; then cat "$f"; fi; done; } > /run/agentbox-firewall.nft; /usr/sbin/nft -f /run/agentbox-firewall.nft'
         ExecStop=-/usr/sbin/nft delete table inet agentbox
 
         [Install]
@@ -775,6 +860,8 @@ systemd:
         [Service]
         Type=oneshot
         ExecStart=/usr/bin/podman build --pull=newer --no-cache -t localhost/agentbox:latest /etc/agentbox/image
+        # Re-derive the MCP allowlist from the freshly built config, then restart.
+        ExecStart=/usr/bin/systemctl restart agentbox-firewall.service
         ExecStart=/usr/bin/systemctl restart agentbox.service
         TimeoutStartSec=1800
     - name: agentbox-refresh.timer

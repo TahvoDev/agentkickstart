@@ -43,34 +43,47 @@ shown once.
 ```sh
 sudo agentbox up|status|logs|shell     # sync secrets, restart, inspect
 sudo agentbox login|logout|av <args>   # vault owner session / CLI
-sudo agentbox allow <ip|cidr>...       # let an MCP reach a LAN/tailnet host
-sudo agentbox allow clear              # revoke all of them
+sudo agentbox allow <ip|cidr>...       # extra hosts MCP config can't express
+sudo agentbox allow clear              # revoke all manual entries
 ```
 
 ### Reaching a LAN/tailnet service from an MCP
 
-By default the container can only reach the internet, so an MCP that talks to a
+By default the container can only reach the internet. An MCP that talks to a
 local service (Home Assistant, a LAN model server, a NAS, another tailnet host)
-is blocked. Opt specific destinations in without opening the whole range:
+is allowed **automatically** — just point the MCP at it. Before the firewall
+comes up, `agentbox-egress` reads the enabled MCPs in `opencode.json`, pulls
+every LAN/tailnet address out of each one's `url`, `environment` and command
+arguments, resolves any url hostname, and opens exactly those:
 
-```sh
-sudo agentbox allow 192.168.1.20              # Home Assistant
-sudo agentbox allow 192.168.1.0/24 100.90.0.7 # a subnet + one tailnet host
-sudo agentbox allow                           # show the current allowlist
+```jsonc
+"home-assistant": {
+  "type": "local",
+  "command": ["ha-mcp"],
+  "environment": { "HA_URL": "http://192.168.1.20:8123" },  // -> 192.168.1.20
+  "enabled": true
+}
 ```
 
-This edits `/etc/agentbox/firewall.allow.nft` and reloads the policy; it
-survives reboots. It is IPv4/IPv6 per-destination, not per-port.
+If something can't be expressed in an MCP's config (a shared service, a name
+the box can't resolve at boot), add it explicitly — it augments the derived
+list and survives reboots:
 
-Two things the allowlist deliberately does **not** do:
+```sh
+sudo agentbox allow 192.168.1.0/24 100.90.0.7 # a subnet + one tailnet host
+sudo agentbox allow                           # show the manual list
+```
 
-- It does not expose the **host itself**. A service bound on the host stays
+Both lists are IPv4/IPv6 per-destination, not per-port. Two things they
+deliberately do **not** do:
+
+- They do not expose the **host itself**. A service bound on the host stays
   unreachable; run it as a container on the `agentbox` network instead.
-- It does not make mDNS `.local` names resolvable — use an IP or a name your
+- They do not make mDNS `.local` names resolvable — use an IP or a name your
   DNS server knows.
 
-Every destination you add is another place a compromised agent could pivot to,
-so keep the list as small as the MCP actually needs.
+Every destination is another place a compromised agent could pivot to, so keep
+it as small as the MCP actually needs.
 
 URLs, both tailnet-only:
 
