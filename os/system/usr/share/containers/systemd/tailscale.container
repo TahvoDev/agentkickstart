@@ -1,0 +1,32 @@
+[Unit]
+Description=Tailscale
+Requires=agentbox-provision.service agentbox-selinux.service agentbox-tailscale-serve.service
+After=agentbox-provision.service agentbox-selinux.service agentbox-tailscale-serve.service network-online.target
+Wants=network-online.target
+
+[Container]
+ContainerName=tailscale
+Image=docker.io/tailscale/tailscale:stable
+AutoUpdate=registry
+Network=host
+AddDevice=/dev/net/tun
+AddCapability=NET_ADMIN
+AddCapability=NET_RAW
+# No SecurityLabelDisable: agentbox-selinux.service turns on the
+# container_use_devices boolean so a container that explicitly adds a device
+# can open it, while SELinux stays enforcing.
+# The state dir is private-labeled :Z and agentbox-tailscale-serve.service
+# stages the serve config into it, so nothing is mounted from the host.
+Volume=/var/lib/tailscale:/var/lib/tailscale:Z
+Environment=TS_HOSTNAME=agentbox
+Environment=TS_STATE_DIR=/var/lib/tailscale
+Environment=TS_USERSPACE=false
+Environment=TS_SERVE_CONFIG=/var/lib/tailscale/serve.json
+Environment=TS_EXTRA_ARGS=--advertise-tags=tag:agentbox
+EnvironmentFile=/etc/agentbox/tailscale.env
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

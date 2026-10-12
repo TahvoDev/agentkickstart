@@ -15,6 +15,8 @@ on:
 permissions:
   contents: read
   packages: write
+  # cosign keyless signing: the workflow's OIDC identity is the signer.
+  id-token: write
 
 jobs:
   images:
@@ -49,6 +51,31 @@ jobs:
         run: |
           ./build.sh agent
           ./build.sh os
+
+      - name: install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: sign images (keyless)
+        run: |
+          # Keyless: cosign signs with the runner's GitHub OIDC identity, no key.
+          # cosign (go-containerregistry) reads the Docker config, not podman's
+          # authfile, so bridge the login creds across.
+          mkdir -p "$HOME/.docker"
+          cp "$REGISTRY_AUTH_FILE" "$HOME/.docker/config.json"
+          sign() {
+            podman push --digestfile "$RUNNER_TEMP/digest" "$1"
+            cosign sign --yes "$1@$(cat "$RUNNER_TEMP/digest")"
+          }
+          sign "ghcr.io/$OWNER/agentbox-agent:$AGENT_TAG"
+          sign "ghcr.io/$OWNER/agentbox-os:$OS_TAG"
+
+      - name: verify signatures (self-check)
+        run: |
+          for image in "ghcr.io/$OWNER/agentbox-agent:$AGENT_TAG" "ghcr.io/$OWNER/agentbox-os:$OS_TAG"; do
+            cosign verify "$image" \
+              --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/build.yml@.*$" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          done
 
   installer:
     needs: images

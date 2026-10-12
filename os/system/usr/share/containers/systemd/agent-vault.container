@@ -6,7 +6,9 @@ Wants=network-online.target
 
 [Container]
 ContainerName=agent-vault
-# Keep in sync with the COPY --from in the agent Containerfile.
+# Keep the tag in sync with the COPY --from in the agent Containerfile (which
+# pins by digest). Tag, not digest, here: AutoUpdate=registry can't compare a
+# digest-pinned ref, so pinning would silently stop auto-updates.
 Image=docker.io/infisical/agent-vault:0.40.0
 AutoUpdate=registry
 Network=agentbox.network

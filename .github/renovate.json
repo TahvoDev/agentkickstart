@@ -1,0 +1,35 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "pinDigests": true,
+  "ignorePaths": ["os/system/usr/share/containers/systemd/agentbox.container"],
+  "packageRules": [
+    {
+      "description": "Runtime quadlets track moving tags for podman auto-update; do not pin by digest.",
+      "matchFileNames": [
+        "os/system/usr/share/containers/systemd/agent-vault.container",
+        "os/system/usr/share/containers/systemd/tailscale.container"
+      ],
+      "pinDigests": false
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "npm tool pins in the agent Containerfile (see the inline renovate comments)",
+      "managerFilePatterns": ["(^|/)agent/Containerfile$"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>\\S+)\\s+ARG \\w+_VERSION=(?<currentValue>\\S+)"
+      ]
+    },
+    {
+      "customType": "regex",
+      "description": "build.sh BUILDER_IMAGE default",
+      "managerFilePatterns": ["(^|/)build\\.sh$"],
+      "matchStrings": [
+        "BUILDER_IMAGE=\\$\\{BUILDER_IMAGE:-(?<depName>[^:]+/[^:]+):(?<currentValue>[^@\\s}]+)(?:@(?<currentDigest>sha256:[a-f0-9]{64}))?"
+      ],
+      "datasourceTemplate": "docker"
+    }
+  ]
+}

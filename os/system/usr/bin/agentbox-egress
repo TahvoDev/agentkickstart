@@ -13,7 +13,7 @@
 # extra destinations on top.
 set -uo pipefail
 
-CFG=${1:-/etc/agentbox/opencode.json}
+CFG=${1:-/usr/share/agentbox/opencode.json}
 OUT=/etc/agentbox/firewall.mcp.nft
 tmp=$(mktemp) || exit 0
 trap 'rm -f "$tmp"' EXIT

@@ -1,0 +1,13 @@
+[Unit]
+Description=Stage the Tailscale serve config into its state directory
+After=systemd-tmpfiles-setup.service
+Requires=systemd-tmpfiles-setup.service
+Before=tailscale.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/install -D -o root -g root -m 0644 /usr/share/agentbox/tailscale-serve.json /var/lib/tailscale/serve.json
+
+[Install]
+WantedBy=multi-user.target

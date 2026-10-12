@@ -6,32 +6,36 @@
 #
 #   podman build -f os/Containerfile -t ghcr.io/OWNER/agentbox-os:latest .
 #
-# Pin the base to a Fedora release once you have a known-good one. The
-# installer ISO is built on a Fedora host (see build.sh installer): osbuild's
-# grub2.iso stage reads the Fedora EFI shim, so it can't build off a non-Fedora
-# host.
-FROM quay.io/fedora/fedora-bootc:latest
+# Pinned to Fedora 44 by digest for reproducible builds; Renovate bumps it.
+# The installer ISO uses the `bootc-generic-iso` type, which takes the kernel +
+# EFI tree from the installer container in os/iso/ (not this image), so it
+# builds on any host.
+FROM quay.io/fedora/fedora-bootc:44@sha256:a2789aaa615504ac9dd039a6ac0cc75343ceca89416e38441d739dbffe6557c9
 
 # The base already ships podman, nftables, jq, curl and openssh-server
 # (verified on fc44). Add the EFI bootloader packages: the installer ISO build
 # (osbuild's grub2.iso stage) needs shim + grub EFI binaries.
 RUN dnf -y install shim-x64 grub2-efi-x64 \
-  && dnf -y clean all && rm -rf /var/cache/* /var/lib/dnf/* /run/dnf
+  && dnf -y clean all && rm -rf /var/cache/* /var/lib/dnf/* /run/dnf /var/log/dnf*.log
 
 # Host payload, one source of truth per file (see os/system/): systemd units,
 # quadlets, tmpfiles, the agentbox CLI, the egress deriver and the firewall.
 COPY os/system/ /
 # The MCP config is also what agentbox-egress reads to learn which LAN hosts
 # the containers may reach, so bake a copy on the host too.
-COPY agent/opencode.json /etc/agentbox/opencode.json
+COPY agent/opencode.json /usr/share/agentbox/opencode.json
 
 # Point the agent quadlet at the real agent image (build.sh passes this). The
 # checked-in value is a placeholder so a plain `podman build` stays valid.
 ARG AGENT_IMAGE=ghcr.io/OWNER/agentbox-agent:latest
 RUN sed -i "s|^Image=ghcr.io/OWNER/agentbox-agent:latest\$|Image=${AGENT_IMAGE}|" \
-      /etc/containers/systemd/agentbox.container
+      /usr/share/containers/systemd/agentbox.container
 
 RUN systemctl enable \
       agentbox-firewall.service agent-vault-init.service \
-      agentbox-provision.service podman-auto-update.timer sshd.service \
+      agentbox-provision.service agentbox-selinux.service \
+      agentbox-tailscale-serve.service podman-auto-update.timer sshd.service \
  && systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
+
+# bootc's static image checks; fails the build on problems.
+RUN bootc container lint

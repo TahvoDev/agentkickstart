@@ -1,8 +1,8 @@
-FROM docker.io/library/node:22-bookworm-slim
+FROM docker.io/library/node:22-bookworm-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392
 
 # Agent Vault CLI: `agent-vault run` routes outbound HTTPS through the
 # broker. Keep in sync with Image= in agent-vault.container.
-COPY --from=docker.io/infisical/agent-vault:0.40.0 /usr/local/bin/agent-vault /usr/local/bin/agent-vault
+COPY --from=docker.io/infisical/agent-vault:0.40.0@sha256:4d490e2586c553ea121fa404b66812ad40c246cc841b0cc746682d0a360bdf1e /usr/local/bin/agent-vault /usr/local/bin/agent-vault
 
 # Desktop: Xvfb + XFCE, shared over noVNC behind nginx basic auth.
 # wmctrl/xdotool/x11-utils/at-spi2-core feed the computer-use MCP.
@@ -17,19 +17,24 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # computer-use MCP (verifies its binaries against published sha256).
+# renovate: datasource=npm depName=@agent-sh/computer-use-linux
 ARG CUL_VERSION=0.7.15
 RUN npm install -g @agent-sh/computer-use-linux@${CUL_VERSION}
 
 # Playwright MCP + the Chromium it drives (browser cache outside $HOME).
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+# renovate: datasource=npm depName=@playwright/mcp
 ARG PW_MCP_VERSION=0.0.83
+# renovate: datasource=npm depName=playwright
 ARG PW_VERSION=1.64.0-alpha-1790635538000
 RUN npm install -g @playwright/mcp@${PW_MCP_VERSION} playwright@${PW_VERSION} \
  && playwright install --with-deps chromium
 
-# Pin these once you have a known-good pair.
-ARG OPENCODE_VERSION=latest
-ARG PASEO_VERSION=latest
+# Pinned to a known-good pair; Renovate keeps them current.
+# renovate: datasource=npm depName=opencode-ai
+ARG OPENCODE_VERSION=1.19.0
+# renovate: datasource=npm depName=@getpaseo/cli
+ARG PASEO_VERSION=0.11.2
 RUN npm install -g opencode-ai@${OPENCODE_VERSION} @getpaseo/cli@${PASEO_VERSION}
 
 COPY agent/opencode.json /etc/opencode/opencode.json

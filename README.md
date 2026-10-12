@@ -26,13 +26,12 @@ os/                        the bootc OS image
   Containerfile            COPY the payload + enable units
   iso/                     bootc-generic-iso installer container (Anaconda + kickstart)
   system/                  the host payload, one file per source of truth
-    usr/bin/agentbox           the one CLI (setup/up/status/authorize/allow/...)
-    usr/bin/agentbox-egress    derives the LAN allowlist from the MCP config
-    usr/lib/tmpfiles.d/        creates the volume/config dirs with owners
-    etc/containers/systemd/    quadlets (agentbox, agent-vault, tailscale, net)
-    etc/systemd/system/        firewall / vault-init / provision units
-    etc/agentbox/firewall.nft  the container egress policy
-    etc/tailscale/serve/       tailnet HTTPS routes
+    usr/bin/agentbox              the one CLI (setup/up/status/authorize/allow/...)
+    usr/bin/agentbox-egress       derives the LAN allowlist from the MCP config
+    usr/lib/tmpfiles.d/           creates the volume/config dirs with owners
+    usr/lib/systemd/system/       firewall / vault / provision / selinux units
+    usr/share/containers/systemd/ quadlets (agentbox, agent-vault, tailscale, net)
+    usr/share/agentbox/           egress policy, MCP config, tailscale serve config
 build.sh                   build + push both images; build the installer ISO
 ```
 

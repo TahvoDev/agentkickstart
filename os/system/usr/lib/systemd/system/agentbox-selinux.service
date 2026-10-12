@@ -1,0 +1,16 @@
+[Unit]
+Description=Allow containers to use explicitly-added device nodes
+# The tailscale container opens /dev/net/tun, which container_t is not granted
+# by default. container_use_devices grants access to device nodes; the device
+# cgroup still limits it to containers that explicitly name a device.
+ConditionSecurity=selinux
+After=sysinit.target
+Before=tailscale.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/setsebool -P container_use_devices=on
+
+[Install]
+WantedBy=multi-user.target
