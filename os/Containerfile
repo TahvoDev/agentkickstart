@@ -12,9 +12,11 @@
 # host.
 FROM quay.io/fedora/fedora-bootc:latest
 
-# No package installs: the base already ships podman, nftables, jq, curl and
-# openssh-server (verified on fc44). Re-add a dnf step only if a future base
-# drops one.
+# The base already ships podman, nftables, jq, curl and openssh-server
+# (verified on fc44). Add the EFI bootloader packages: the installer ISO build
+# (osbuild's grub2.iso stage) needs shim + grub EFI binaries.
+RUN dnf -y install shim-x64 grub2-efi-x64 \
+  && dnf -y clean all && rm -rf /var/cache/* /var/lib/dnf/* /run/dnf
 
 # Host payload, one source of truth per file (see os/system/): systemd units,
 # quadlets, tmpfiles, the agentbox CLI, the egress deriver and the firewall.

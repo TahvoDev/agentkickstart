@@ -16,7 +16,7 @@ set -euo pipefail
 REGISTRY=${REGISTRY:-ghcr.io}
 AGENT_TAG=${AGENT_TAG:-latest}
 OS_TAG=${OS_TAG:-latest}
-BUILDER_IMAGE=${BUILDER_IMAGE:-ghcr.io/osbuild/image-builder-cli:latest}
+BUILDER_IMAGE=${BUILDER_IMAGE:-registry.fedoraproject.org/fedora:43}
 LOCAL_OS=${LOCAL_OS:-localhost/agentbox-os:latest}
 ROOT_FS=${ROOT_FS:-xfs}
 HERE=$(cd -- "$(dirname -- "$0")" && pwd)
@@ -55,47 +55,46 @@ case "${1:-}" in
       pull=(--bootc-pull-container)
     fi
 
-    # No-op chcon/restorecon shims: the image-builder container relabels its
-    # store at startup, which fails on hosts without SELinux (Ubuntu).
+    # osbuild's grub2.iso stage reads the Fedora EFI shim from /boot/efi. Run
+    # the build inside a Fedora container with image-builder + the EFI packages
+    # installed, so the environment osbuild runs in is Fedora. On a bare Ubuntu
+    # runner (and in the image-builder-cli container) there is no Fedora EFI
+    # tree, and the stage fails on /boot/efi/EFI/fedora/shimx64.efi.
+    #
+    # No-op chcon/restorecon shims: osbuild relabels its store at startup,
+    # which fails on hosts without SELinux (Ubuntu).
     shim=$(mktemp -d); trap 'rm -rf "$shim"' EXIT
     for c in chcon restorecon fixfiles setfiles matchpathcon selabel; do
       printf '#!/bin/sh\nexit 0\n' > "$shim/$c"; chmod +x "$shim/$c"
     done
 
-    # The builder container pulls the OS ref itself, so hand it registry
-    # creds: mount an authfile and point REGISTRY_AUTH_FILE at it. Use the
-    # caller's ($REGISTRY_AUTH_FILE) if set, else root's. Without this a
-    # private OS image fails to pull with "unauthorized".
+    # Hand the builder registry creds for the OS ref it pulls. Use the caller's
+    # ($REGISTRY_AUTH_FILE) if set, else root's.
     auth=${REGISTRY_AUTH_FILE:-/etc/containers/auth.json}
     authmnt=()
     if "${SUDO[@]}" test -r "$auth"; then
       authmnt=(-v "$auth:/etc/containers/auth.json:ro" -e REGISTRY_AUTH_FILE=/etc/containers/auth.json)
     fi
 
-    # osbuild's grub2.iso stage reads the Fedora EFI shim from /boot/efi, so
-    # the build host must be Fedora and its EFI tree must be visible in the
-    # builder container (no-op on hosts without /boot/efi).
-    efimnt=()
-    [ -d /boot/efi ] && efimnt=(-v /boot/efi:/boot/efi:ro)
-
-    # Rootful + --privileged is required (it mounts devtmpfs); mount the
-    # rootful store so it finds a LOCAL=1 image by ref.
+    # Rootful + --privileged (osbuild mounts devtmpfs/loop); share the rootful
+    # store so image-builder reuses the pulled OS image.
     mkdir -p "$HERE/output"
     "${SUDO[@]}" podman run --rm --privileged \
       "${authmnt[@]}" \
-      "${efimnt[@]}" \
       -v /var/lib/containers/storage:/var/lib/containers/storage \
       -v "$HERE/output:/output" \
       -v "$HERE/os/installer.toml:/installer.toml:ro" \
       -v "$shim:/shim:ro" \
       -e PATH=/shim:/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin \
       "$BUILDER_IMAGE" \
-      build --output-dir /output bootc-installer \
-        --bootc-ref "$os_ref" \
-        --bootc-installer-payload-ref "$os_ref" \
-        "${pull[@]}" \
-        --bootc-default-fs "$ROOT_FS" \
-        --blueprint /installer.toml
+      bash -euc "
+        dnf -y install image-builder osbuild-selinux podman shim-x64 grub2-efi-x64 >&2
+        image-builder build --output-dir /output bootc-installer \
+          --bootc-ref '$os_ref' \
+          --bootc-installer-payload-ref '$os_ref' ${pull[*]} \
+          --bootc-default-fs '$ROOT_FS' \
+          --blueprint /installer.toml
+      "
     echo "wrote $HERE/output/install.iso"
     ;;
 

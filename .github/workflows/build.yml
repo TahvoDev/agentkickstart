@@ -1,8 +1,9 @@
 name: build
 
-# Images are built/pushed on a hosted runner; the installer ISO needs a Fedora
-# host (osbuild's grub2.iso stage reads the Fedora EFI shim from /boot/efi), so
-# it runs on a self-hosted runner labelled "fedora".
+# Builds and pushes both images to GHCR and publishes the installer ISO, all on
+# a hosted runner. The installer build runs image-builder inside a Fedora
+# container (see build.sh installer) because osbuild's grub2.iso stage needs
+# the Fedora EFI tree.
 on:
   workflow_dispatch:
   push:
@@ -30,6 +31,9 @@ jobs:
       - name: podman
         run: command -v podman || { sudo apt-get update && sudo apt-get install -y podman; }
 
+      - name: free disk space (installer build is heavy)
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/share/swift /usr/local/.ghcup
+
       # Pin both auth files to fixed, owner-correct paths. Relying on the
       # default store puts creds in /run/user/<uid>/containers/auth.json, which
       # a root login can clobber root-owned, breaking the non-root build.
@@ -40,34 +44,13 @@ jobs:
           AUTH="$HOME/.config/containers/auth.json"
           mkdir -p "$(dirname "$AUTH")"
           printf '%s' "$CR_TOKEN" | podman login --authfile "$AUTH" ghcr.io -u '${{ github.actor }}' --password-stdin
+          printf '%s' "$CR_TOKEN" | sudo podman login --authfile /etc/containers/auth.json ghcr.io -u '${{ github.actor }}' --password-stdin
           echo "REGISTRY_AUTH_FILE=$AUTH" >> "$GITHUB_ENV"
 
       - name: build + push agent and OS images
         run: |
           ./build.sh agent
           ./build.sh os
-
-  installer:
-    needs: images
-    # Self-hosted Fedora runner: podman + passwordless sudo, labelled "fedora".
-    # Register with: ./config.sh --labels fedora  (see README).
-    runs-on: [self-hosted, linux, fedora]
-    env:
-      OWNER: ${{ github.repository_owner }}
-      AGENT_TAG: edge
-      OS_TAG: edge
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: lowercase owner
-        run: echo "OWNER=${OWNER,,}" >> "$GITHUB_ENV"
-
-      - name: ghcr login (user + root)
-        env:
-          CR_TOKEN: ${{ github.token }}
-        run: |
-          printf '%s' "$CR_TOKEN" | podman login ghcr.io -u '${{ github.actor }}' --password-stdin
-          printf '%s' "$CR_TOKEN" | sudo podman login ghcr.io -u '${{ github.actor }}' --password-stdin
 
       - name: build installer ISO
         run: ./build.sh installer
