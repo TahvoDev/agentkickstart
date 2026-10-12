@@ -63,10 +63,12 @@ updates itself with `bootc upgrade`; the agent image updates via
   `chcon`/`restorecon` out of the builder, which otherwise fails trying to
   relabel its store (`chcon: … Operation not permitted`).
 - The `agent`/`os` steps push to `$REGISTRY/$OWNER`; the box pulls the agent
-  image from there at runtime, and `bootc upgrade` pulls the OS image. The
-  `installer` step is fully local — it builds the OS image into rootful storage
-  as `localhost/agentbox-os:latest` and feeds it to the builder, so it needs no
-  registry or network push.
+  image from there at runtime, and `bootc upgrade` pulls the OS image.
+- `installer` embeds the OS image and records its ref as the installed box's
+  update source, so run `./build.sh os` first — it pulls the pushed image by
+  default. For an **offline smoke test**, `LOCAL=1 ./build.sh installer` builds
+  the OS image from local storage instead (it installs fine, but `bootc upgrade`
+  is left pointing at `localhost` and won't work).
 - Don't run the build from inside an unprivileged container: the `devtmpfs`
   mount needs real root.
 

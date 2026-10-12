@@ -40,19 +40,29 @@ case "${1:-}" in
     ;;
 
   installer)
-    # 1. Build the OS image into *rootful* storage (the builder uses local
-    #    container storage, so no registry or network pull is needed).
-    "${SUDO[@]}" podman build -f "$HERE/os/Containerfile" -t "$LOCAL_OS" "$HERE"
+    # The installer bakes its payload ref as the installed system's update
+    # source, so by default it points at the pushed OS image. LOCAL=1 builds
+    # offline from local storage instead (installs fine, but `bootc upgrade`
+    # is left pointing at localhost and won't work).
+    if [ "${LOCAL:-0}" = 1 ]; then
+      os_ref="$LOCAL_OS"
+      "${SUDO[@]}" podman build -f "$HERE/os/Containerfile" -t "$os_ref" "$HERE"
+      pull=()
+    else
+      : "${OWNER:?set OWNER (or LOCAL=1 for an offline test build)}"
+      os_ref="$REGISTRY/$OWNER/agentbox-os:$OS_TAG"
+      pull=(--bootc-pull-container)
+    fi
 
-    # 2. No-op chcon/restorecon shims: the image-builder container relabels its
-    #    store at startup, which fails on hosts without SELinux (Ubuntu).
+    # No-op chcon/restorecon shims: the image-builder container relabels its
+    # store at startup, which fails on hosts without SELinux (Ubuntu).
     shim=$(mktemp -d); trap 'rm -rf "$shim"' EXIT
     for c in chcon restorecon fixfiles setfiles matchpathcon selabel; do
       printf '#!/bin/sh\nexit 0\n' > "$shim/$c"; chmod +x "$shim/$c"
     done
 
-    # 3. Build the ISO. Rootful + --privileged is required (it mounts devtmpfs);
-    #    mount the rootful store so it finds the OS image by ref.
+    # Rootful + --privileged is required (it mounts devtmpfs); mount the
+    # rootful store so it finds a LOCAL=1 image by ref.
     mkdir -p "$HERE/output"
     "${SUDO[@]}" podman run --rm --privileged \
       -v /var/lib/containers/storage:/var/lib/containers/storage \
@@ -62,8 +72,9 @@ case "${1:-}" in
       -e PATH=/shim:/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin \
       "$BUILDER_IMAGE" \
       build --output-dir /output bootc-installer \
-        --bootc-ref "$LOCAL_OS" \
-        --bootc-installer-payload-ref "$LOCAL_OS" \
+        --bootc-ref "$os_ref" \
+        --bootc-installer-payload-ref "$os_ref" \
+        "${pull[@]}" \
         --bootc-default-fs "$ROOT_FS" \
         --blueprint /installer.toml
     echo "wrote $HERE/output/install.iso"
