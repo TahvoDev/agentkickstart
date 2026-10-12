@@ -1,0 +1,34 @@
+[Unit]
+Description=Agent Vault (credential broker)
+Requires=agent-vault-init.service agentbox-firewall.service
+After=agent-vault-init.service agentbox-firewall.service network-online.target
+Wants=network-online.target
+
+[Container]
+ContainerName=agent-vault
+# Keep in sync with the COPY --from in the agent Containerfile.
+Image=docker.io/infisical/agent-vault:0.40.0
+AutoUpdate=registry
+Network=agentbox.network
+User=10002
+Group=10002
+DropCapability=ALL
+NoNewPrivileges=true
+Memory=512m
+PidsLimit=256
+Environment=HOME=/data
+# Address agents are told to use (also a SAN on the proxy certs)
+Environment=AGENT_VAULT_ADDR=http://agent-vault:14321
+Environment=AGENT_VAULT_TELEMETRY=false
+# AGENT_VAULT_MASTER_PASSWORD (generated on first boot)
+EnvironmentFile=/etc/agent-vault/master.env
+# Admin API/UI: localhost only. The :14322 proxy is deliberately
+# not published; agents reach it over the private network.
+PublishPort=127.0.0.1:14321:14321
+Volume=/var/lib/agent-vault:/data:Z
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

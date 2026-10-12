@@ -1,0 +1,47 @@
+FROM docker.io/library/node:22-bookworm-slim
+
+# Agent Vault CLI: `agent-vault run` routes outbound HTTPS through the
+# broker. Keep in sync with Image= in agent-vault.container.
+COPY --from=docker.io/infisical/agent-vault:0.40.0 /usr/local/bin/agent-vault /usr/local/bin/agent-vault
+
+# Desktop: Xvfb + XFCE, shared over noVNC behind nginx basic auth.
+# wmctrl/xdotool/x11-utils/at-spi2-core feed the computer-use MCP.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      git ripgrep curl ca-certificates gh openssl procps \
+      xvfb x11vnc novnc websockify nginx dbus dbus-x11 \
+      xfce4 xfce4-terminal fonts-dejavu-core chromium \
+      wmctrl x11-utils xdotool at-spi2-core \
+ && ln -s vnc.html /usr/share/novnc/index.html \
+ && echo 'export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --no-sandbox"' > /etc/chromium.d/agentbox \
+ && rm -rf /var/lib/apt/lists/*
+
+# computer-use MCP (verifies its binaries against published sha256).
+ARG CUL_VERSION=0.7.15
+RUN npm install -g @agent-sh/computer-use-linux@${CUL_VERSION}
+
+# Playwright MCP + the Chromium it drives (browser cache outside $HOME).
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+ARG PW_MCP_VERSION=0.0.83
+ARG PW_VERSION=1.64.0-alpha-1790635538000
+RUN npm install -g @playwright/mcp@${PW_MCP_VERSION} playwright@${PW_VERSION} \
+ && playwright install --with-deps chromium
+
+# Pin these once you have a known-good pair.
+ARG OPENCODE_VERSION=latest
+ARG PASEO_VERSION=latest
+RUN npm install -g opencode-ai@${OPENCODE_VERSION} @getpaseo/cli@${PASEO_VERSION}
+
+COPY agent/opencode.json /etc/opencode/opencode.json
+COPY agent/nginx.conf /etc/nginx-agentbox.conf
+COPY --chmod=0755 agent/start-agent.sh /usr/local/bin/start-agent
+
+RUN useradd -m -u 10001 -s /bin/bash agent \
+ && mkdir -p /workspace && chown agent:agent /workspace
+USER agent
+WORKDIR /workspace
+
+ENV OPENCODE_CONFIG=/etc/opencode/opencode.json \
+    NODE_USE_ENV_PROXY=1
+
+CMD ["start-agent"]

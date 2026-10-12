@@ -1,0 +1,13 @@
+[Unit]
+Description=Generate Agent Vault master password
+ConditionPathExists=!/etc/agent-vault/master.env
+Before=agent-vault.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+UMask=0077
+ExecStart=/bin/bash -c 'echo "AGENT_VAULT_MASTER_PASSWORD=$(head -c 32 /dev/urandom | base64 -w0)" > /etc/agent-vault/master.env'
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,16 @@
+# bootc-image-builder install customizations.
+#
+# Pass with:  --config os/config.toml
+# Only install-time things belong here (users, keys, disk). Packages, files,
+# units and the firewall live in os/Containerfile + os/system/.
+#
+# EDIT: your admin username and SSH public key.
+[[customizations.user]]
+name = "CHANGEME_USER"
+groups = ["wheel"]
+key = "CHANGEME_SSH_PUBLIC_KEY"
+
+# Disk layout and encryption are chosen at install time, not in this file:
+# bootc-image-builder takes filesystem/disk options on the command line, and
+# a TPM-sealed LUKS root is enrolled with systemd-cryptenroll after first boot.
+# See the README for the current encryption flags.

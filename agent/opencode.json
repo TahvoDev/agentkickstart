@@ -1,0 +1,19 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "computer-use-linux": {
+      "type": "local",
+      "command": ["computer-use-linux", "mcp"],
+      "enabled": true
+    },
+    "playwright": {
+      "type": "local",
+      "command": ["playwright-mcp", "--no-sandbox"],
+      "environment": {
+        "HTTP_PROXY": "", "HTTPS_PROXY": "", "ALL_PROXY": "",
+        "http_proxy": "", "https_proxy": "", "all_proxy": ""
+      },
+      "enabled": true
+    }
+  }
+}

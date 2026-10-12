@@ -1,48 +1,47 @@
 #!/usr/bin/env bash
-# build.sh - substitute the two machine identities into agentbox.bu and compile
-# it to agentbox.ign with Butane. Run this on the machine where you install
-# Fedora CoreOS.
+# build.sh - build and publish the two bootc artifacts.
 #
-#   ./build.sh --user <admin> --ssh-key '<ssh-ed25519 AAAA...>'
+#   OWNER=<registry-namespace> ./build.sh agent   # build + push the agent image
+#   OWNER=<registry-namespace> ./build.sh os      # build + push the OS image
+#   OWNER=<registry-namespace> ./build.sh disk    # turn the OS image into a .raw
 #
-# Uses a local butane if installed, otherwise the quay.io/coreos/butane
-# container. Refuses to compile if any CHANGEME_* placeholder is left.
+# The agent image is pulled by the box at runtime; the OS image is what
+# bootc-image-builder flashes to a disk. Edit os/config.toml (user + SSH key)
+# before building a disk.
 set -euo pipefail
 
-USER=; SSH_KEY=
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --user)    USER=${2:?};    shift 2 ;;
-    --ssh-key) SSH_KEY=${2:?}; shift 2 ;;
-    -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
-    *) echo "unknown argument: $1" >&2; exit 2 ;;
-  esac
-done
-: "${USER:?--user required}"
-: "${SSH_KEY:?--ssh-key required}"
+REGISTRY=${REGISTRY:-ghcr.io}
+: "${OWNER:?set OWNER to your registry namespace, e.g. OWNER=youruser}"
+AGENT_TAG=${AGENT_TAG:-latest}
+OS_TAG=${OS_TAG:-latest}
+DISK_TYPE=${DISK_TYPE:-raw}
 
+AGENT_IMAGE="$REGISTRY/$OWNER/agentbox-agent:$AGENT_TAG"
+OS_IMAGE="$REGISTRY/$OWNER/agentbox-os:$OS_TAG"
 HERE=$(cd -- "$(dirname -- "$0")" && pwd)
-work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 
-sed -e "s|CHANGEME_USER|$USER|g" \
-    -e "s|CHANGEME_SSH_PUBLIC_KEY|$SSH_KEY|g" \
-    "$HERE/agentbox.bu" > "$work/agentbox.bu"
+build() { podman build -f "$1" -t "$2" "$HERE"; }
 
-if grep -q 'CHANGEME_' "$work/agentbox.bu"; then
-  echo "error: unsubstituted CHANGEME_* left in the config" >&2
-  exit 1
-fi
-
-if command -v butane >/dev/null 2>&1; then
-  butane --pretty --strict "$work/agentbox.bu" > "$HERE/agentbox.ign"
-else
-  podman run --rm -i -v "$work":/files -w /files quay.io/coreos/butane:release \
-    --pretty --strict agentbox.bu > "$HERE/agentbox.ign"
-fi
-
-echo
-echo "wrote $HERE/agentbox.ign"
-echo "sha256: $(sha256sum "$HERE/agentbox.ign" | cut -d' ' -f1)"
-echo
-echo "Install Fedora CoreOS with coreos.inst.ignition_url pointing at that file."
-echo "After first boot: ssh $USER@agentbox, then run 'sudo agentbox setup'."
+case "${1:-}" in
+  agent)
+    build "$HERE/agent/Containerfile" "$AGENT_IMAGE"
+    podman push "$AGENT_IMAGE"
+    ;;
+  os)
+    build "$HERE/os/Containerfile" "$OS_IMAGE"
+    podman push "$OS_IMAGE"
+    ;;
+  disk)
+    mkdir -p "$HERE/output"
+    podman run --rm --privileged --security-opt label=type:unconfined_t \
+      -v "$HERE/output:/output" \
+      -v "$HERE/os/config.toml:/config.toml:ro" \
+      quay.io/centos-bootc/bootc-image-builder:latest \
+      --type "$DISK_TYPE" --config /config.toml "$OS_IMAGE"
+    echo "wrote $HERE/output/image/disk.$DISK_TYPE"
+    ;;
+  *)
+    echo "usage: OWNER=<ns> $0 agent|os|disk" >&2
+    exit 2
+    ;;
+esac

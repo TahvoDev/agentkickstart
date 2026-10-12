@@ -1,0 +1,50 @@
+[Unit]
+Description=Paseo + OpenCode agent box
+Requires=agentbox-provision.service agentbox-firewall.service
+After=agentbox-provision.service agentbox-firewall.service network-online.target
+Wants=network-online.target
+
+[Container]
+ContainerName=agentbox
+Network=agentbox.network
+# The agent desktop image is built and pushed by CI (see agent/ and build.sh),
+# then pulled here. Update it with podman-auto-update.timer.
+Image=ghcr.io/OWNER/agentbox-agent:latest
+AutoUpdate=registry
+User=10001
+Group=10001
+DropCapability=ALL
+NoNewPrivileges=true
+ShmSize=1g
+Memory=6g
+PidsLimit=4096
+PodmanArgs=--init
+Environment=TZ=Etc/UTC
+Environment=DISPLAY=:1
+Environment=RESOLUTION=1600x900x24
+Environment=PASEO_HOME=/home/agent/.paseo
+Environment=PASEO_LISTEN=0.0.0.0:6767
+Environment=PASEO_WEB_UI_ENABLED=true
+# Allow the MagicDNS name that Tailscale serve presents
+Environment=PASEO_HOSTNAMES=localhost,.ts.net
+# Headless: skip the ~1.4 GB local speech models
+Environment=PASEO_DICTATION_ENABLED=false
+Environment=PASEO_VOICE_MODE_ENABLED=false
+# Placeholders only; Agent Vault swaps in real values at the proxy
+Environment=ANTHROPIC_API_KEY=__anthropic_api_key__
+Environment=GITHUB_TOKEN=__github_token__
+# PASEO_PASSWORD + PASSWORD (desktop), and AGENT_VAULT_ADDR/VAULT/TOKEN (proxy role)
+EnvironmentFile=/etc/agentbox/paseo.env
+EnvironmentFile=/etc/agentbox/proxy.env
+# Localhost only: Tailscale fronts it
+PublishPort=127.0.0.1:6767:6767
+PublishPort=127.0.0.1:8080:8080
+Volume=/var/lib/agentbox/home:/home/agent:Z
+Volume=/var/lib/agentbox/workspace:/workspace:Z
+
+[Service]
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

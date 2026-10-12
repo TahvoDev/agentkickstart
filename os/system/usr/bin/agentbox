@@ -1,0 +1,230 @@
+#!/bin/bash
+# agentbox - one command for the whole box.
+#   setup    first run: vault accounts, vaults, credentials, tokens, then up
+#   up       sync secrets, restart Tailscale + agent desktop, show status
+#   status | logs | shell
+#   login | logout     owner session for admin work
+#   allow <ip|cidr>... extra LAN/tailnet hosts (MCP config is auto-used)
+#   av <args>          agent-vault CLI inside the vault container
+set -uo pipefail
+[ "$EUID" -eq 0 ] || exec sudo "$0" "$@"
+
+CONF=/etc/agentbox
+URL=http://127.0.0.1:14321   # vault API as seen from inside its container
+BOOT_VAULT=agentbox-boot     # box secrets, read at boot by a member-role token
+PROXY_VAULT=agentbox         # brokered creds; the agent only gets a proxy-role token
+die() { echo "agentbox: $*" >&2; exit 1; }
+rand() { head -c 24 /dev/urandom | base64 | tr -d '/+='; }
+have_files() { local f; for f in tailscale paseo proxy; do [ -s $CONF/$f.env ] || return 1; done; }
+
+av() {  # agent-vault CLI, run inside the vault container
+  local t=-i; [ -t 0 ] && t=-it
+  podman exec $t -e AGENT_VAULT_ADDR="$URL" agent-vault agent-vault "$@"
+}
+
+fetch() {  # fetch <credential>; retries while the vault comes up
+  local v i
+  for i in $(seq "$TRIES"); do
+    if v=$(podman exec -e AGENT_VAULT_ADDR="$URL" -e AGENT_VAULT_TOKEN \
+             agent-vault agent-vault vault credential get "$1" \
+             --vault "$BOOT_VAULT" 2>/dev/null) && [ -n "$v" ]; then
+      printf '%s' "$v"; return 0
+    fi
+    sleep 10
+  done
+  return 1
+}
+
+write() {  # write <name> <content>  (atomic, 0600, root-owned)
+  ( umask 077; printf '%s\n' "$2" > "$CONF/$1.tmp" ) && mv "$CONF/$1.tmp" "$CONF/$1"
+}
+
+provision() {
+  [ -r $CONF/bootstrap.env ] || die "no bootstrap token yet; run: agentbox setup"
+  . $CONF/bootstrap.env
+  : "${AGENT_VAULT_BOOTSTRAP_TOKEN:?}"
+  export AGENT_VAULT_TOKEN="$AGENT_VAULT_BOOTSTRAP_TOKEN"
+
+  # Already provisioned: keep old values if the vault is unavailable.
+  if have_files; then TRIES=3; else TRIES=30; fi
+
+  local ts pw dp px
+  if ts=$(fetch TS_AUTHKEY) && pw=$(fetch PASEO_PASSWORD) \
+     && dp=$(fetch PASSWORD) && px=$(fetch AGENT_VAULT_PROXY_TOKEN); then
+    write tailscale.env "TS_AUTHKEY=$ts"
+    write paseo.env     "PASEO_PASSWORD=$pw"$'\n'"PASSWORD=$dp"
+    write proxy.env     "AGENT_VAULT_ADDR=http://agent-vault:14321"$'\n'"AGENT_VAULT_VAULT=$PROXY_VAULT"$'\n'"AGENT_VAULT_TOKEN=$px"
+    echo "agentbox: secrets synced from vault '$BOOT_VAULT'"
+  elif have_files; then
+    echo "agentbox: vault unavailable, keeping existing secrets" >&2
+  else
+    die "could not fetch secrets and none are cached"
+  fi
+}
+
+mint() {  # mint <agent-name> <vault:role>  -> token on stdout
+  av agent create "$1" --vault "$2" --token-only 2>/dev/null \
+    || av agent rotate "$1" --token-only
+}
+
+setup() {
+  if [ -s $CONF/bootstrap.env ]; then
+    local a; read -rp "Already set up. Re-run and rotate every token and password? [y/N] " a
+    [ "$a" = y ] || return 0
+  fi
+  systemctl start agent-vault.service || die "vault container failed to start"
+  echo "waiting for the vault..."
+  for _ in $(seq 60); do curl -s -o /dev/null --max-time 2 "http://127.0.0.1:14321/" && break; sleep 2; done
+  curl -s -o /dev/null --max-time 2 "http://127.0.0.1:14321/" || die "vault is not answering"
+
+  local email anthropic gh ts opw
+  read -rp  "Vault owner email [owner@agentbox.local]: " email; email=${email:-owner@agentbox.local}
+  read -rsp "Anthropic API key: " anthropic; echo
+  read -rsp "GitHub token (fine-grained, repo-scoped): " gh; echo
+  read -rsp "Tailscale auth key (tagged tag:agentbox): " ts; echo
+  [ -n "$anthropic" ] && [ -n "$gh" ] && [ -n "$ts" ] || die "all three keys are required"
+
+  # First registered user becomes the owner. On a re-run "register" is
+  # a no-op that still exits 0, so detect an existing owner by trying
+  # to log in with the fresh password and falling back to a prompt.
+  opw=$(rand)
+  printf '%s\n' "$opw" | av auth register --address "$URL" --email "$email" --password-stdin >/dev/null 2>&1 || true
+  if ! printf '%s\n' "$opw" | av auth login --address "$URL" --email "$email" --password-stdin >/dev/null 2>&1; then
+    read -rsp "Existing owner password for $email: " opw; echo
+    printf '%s\n' "$opw" | av auth login --address "$URL" --email "$email" --password-stdin >/dev/null \
+      || die "owner login failed"
+  fi
+
+  av vault create "$BOOT_VAULT"  >/dev/null 2>&1 || true
+  av vault create "$PROXY_VAULT" >/dev/null 2>&1 || true
+
+  # Brokered credentials + which hosts they apply to.
+  av vault credential set ANTHROPIC_API_KEY="$anthropic" GITHUB_TOKEN="$gh" --vault "$PROXY_VAULT" >/dev/null \
+    || die "could not store credentials"
+  av vault service set -f /dev/stdin --vault "$PROXY_VAULT" >/dev/null <<'EOF'
+services:
+  - name: anthropic
+    host: api.anthropic.com
+    auth:
+      type: api-key
+      key: ANTHROPIC_API_KEY
+      header: x-api-key
+  - name: github-api
+    host: api.github.com
+    auth:
+      type: bearer
+      token: GITHUB_TOKEN
+  - name: github
+    host: github.com
+    auth:
+      type: bearer
+      token: GITHUB_TOKEN
+EOF
+  [ $? -eq 0 ] || die "could not set services"
+
+  # Tokens: proxy-role for the agent, member-role for boot-time provisioning.
+  local ptok mtok dpw ppw
+  ptok=$(mint agentbox-proxy     "$PROXY_VAULT:proxy")  || die "could not mint proxy token"
+  mtok=$(mint agentbox-provision "$BOOT_VAULT:member")  || die "could not mint member token"
+  [ -n "$ptok" ] && [ -n "$mtok" ] || die "empty token"
+
+  dpw=$(rand); ppw=$(rand)
+  av vault credential set TS_AUTHKEY="$ts" PASEO_PASSWORD="$ppw" PASSWORD="$dpw" \
+     AGENT_VAULT_PROXY_TOKEN="$ptok" --vault "$BOOT_VAULT" >/dev/null || die "could not store box secrets"
+  write bootstrap.env "AGENT_VAULT_BOOTSTRAP_TOKEN=$mtok"
+
+  # Lock the vault down and leave no owner session on disk.
+  av owner config set --invite-only >/dev/null 2>&1 || echo "warning: could not enable invite-only; do it in the vault UI"
+  podman exec agent-vault rm -f /data/.agent-vault/session.json
+
+  cat <<EOF
+
+---- SAVE THESE NOW (shown once) ----
+Desktop login : user "agent"   password: $dpw
+Paseo password: $ppw
+Vault owner   : $email   password: $opw
+(vault UI: ssh -L 14321:127.0.0.1:14321 <you>@agentbox -> http://localhost:14321)
+--------------------------------------
+
+EOF
+  up
+}
+
+status() {
+  local bad=0 hostip
+  chk() { local d=$1; shift
+    if "$@" >/dev/null 2>&1; then printf '  ok    %s\n' "$d"
+    else printf '  FAIL  %s\n' "$d"; bad=1; fi; }
+  blocked() { ! podman exec agentbox timeout 3 bash -c "exec 3<>/dev/tcp/$1/22"; }
+  hostip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
+
+  chk "container firewall loaded"   nft list table inet agentbox
+  chk "vault running"               systemctl is-active --quiet agent-vault.service
+  chk "vault API answers"           curl -s -o /dev/null --max-time 5 http://127.0.0.1:14321/
+  chk "secrets provisioned"         have_files
+  chk "tailscale running"           systemctl is-active --quiet tailscale.service
+  chk "tailscale logged in"         podman exec tailscale tailscale status
+  chk "agentbox running"            systemctl is-active --quiet agentbox.service
+  chk "paseo health"                curl -fs --max-time 5 http://127.0.0.1:6767/api/health
+  chk "desktop login page (nginx)"  curl -s -o /dev/null --max-time 5 http://127.0.0.1:8080/
+  chk "X display :1 up"             podman exec agentbox xdpyinfo -display :1
+  chk "computer-use MCP installed"  podman exec agentbox sh -c 'command -v computer-use-linux'
+  chk "agent -> vault token valid"  podman exec agentbox agent-vault vault discover
+  chk "brokered Anthropic call"     podman exec agentbox agent-vault run -- \
+                                      curl -fsS -o /dev/null https://api.anthropic.com/v1/models
+  [ -n "$hostip" ] && chk "agent cannot reach host ($hostip:22)" blocked "$hostip"
+  echo; podman exec tailscale tailscale serve status 2>/dev/null | head -n 4
+  return $bad
+}
+
+up() {
+  provision || exit 1
+  systemctl restart agentbox-firewall.service
+  systemctl restart tailscale.service agentbox.service
+  echo "waiting for Paseo + desktop..."
+  for _ in $(seq 60); do
+    curl -fs -o /dev/null --max-time 3 http://127.0.0.1:6767/api/health && break
+    sleep 5
+  done
+  status
+}
+
+allow() {  # allow [ip|cidr ...] | allow clear  - extra egress allowlist
+  # Destinations the MCP config can't express (shared services, bare
+  # hostnames). The MCP-derived list is separate and always applied.
+  local f=$CONF/firewall.allow.nft d
+  if [ $# -eq 0 ]; then
+    if [ -s "$f" ]; then cat "$f"; else echo "no LAN/tailnet destinations allowed"; fi
+    return 0
+  fi
+  if [ "$1" = clear ]; then
+    rm -f "$f"
+  else
+    { echo "# LAN/tailnet destinations the agent container may reach."
+      echo "# Regenerated by 'agentbox allow'; reload: systemctl restart agentbox-firewall"
+      for d in "$@"; do
+        local fam=lan
+        case "$d" in *:*) fam=lan6 ;; esac
+        case "$d" in */*) fam="${fam}_cidr" ;; esac
+        echo "add element inet agentbox allow_${fam} { $d }"
+      done
+    } > "$f"
+  fi
+  systemctl restart agentbox-firewall.service
+  echo "agentbox: egress allowlist updated"
+}
+
+cmd=${1:-up}; shift || true
+case "$cmd" in
+  setup)     setup ;;
+  provision) provision ;;
+  up)        up ;;
+  status)    status ;;
+  logs)      exec journalctl -fu agentbox.service -u agent-vault.service ;;
+  shell)     exec podman exec -it agentbox bash ;;
+  login)     read -rp "Owner email: " e; av auth login --address "$URL" --email "$e" ;;
+  logout)    podman exec agent-vault rm -f /data/.agent-vault/session.json ;;
+  allow)     allow "$@" ;;
+  av)        av "$@" ;;
+  *)         die "usage: agentbox setup|up|status|logs|shell|login|logout|allow|av" ;;
+esac

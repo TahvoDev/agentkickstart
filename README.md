@@ -1,42 +1,67 @@
 # agentkickstart
 
-A single Fedora CoreOS Butane config that boots a self-contained agent box:
+A bootc image (plus its agent container) that turns a PC into a self-contained
+agent box: Paseo + OpenCode agents on a real XFCE desktop (Xvfb + noVNC),
+reached over Tailscale, with credentials brokered by a local Agent Vault. The
+host is immutable and deliberately tiny; the desktop and both brokers run as
+containers.
 
-- **Paseo + OpenCode agents** running on a real XFCE desktop (Xvfb + x11vnc +
-  noVNC), reached from any tailnet device at `https://agentbox.<tailnet>.ts.net:8443`.
-- **Local Agent Vault** (its own unprivileged container) that brokers the
-  Anthropic/GitHub credentials; the agent only ever holds dummy keys and a
-  proxy-role token that cannot read the real values.
-- **TPM-backed LUKS root** so a pulled drive is unreadable.
-- **nftables egress policy** so container traffic can reach the internet but not
-  your LAN, the tailnet, link-local, or the host itself (DNS excepted).
+Two artifacts, one repo:
 
-No secrets live in the ignition. On first boot `agentbox setup` asks for the
-three API keys, stores them in the local vault, and starts everything.
+| Artifact | Source | Where it goes |
+| --- | --- | --- |
+| **agent image** (`ghcr.io/OWNER/agentbox-agent`) | `agent/` | pulled by the box at runtime |
+| **OS image** (`ghcr.io/OWNER/agentbox-os`) | `os/` | flashed to a disk by bootc-image-builder |
 
 ## Layout
 
 ```
-agentbox.bu   the Butane config (the whole box)
-build.sh      substitute your user + SSH key, then compile to agentbox.ign
+agent/                     the agent desktop container image
+  Containerfile
+  opencode.json            MCP servers (also the egress source of truth)
+  nginx.conf
+  start-agent.sh
+os/                        the bootc OS image
+  Containerfile            packages + COPY the payload + enable units
+  config.toml              bootc-image-builder install config (user + SSH key)
+  system/                  the host payload, one file per source of truth
+    usr/bin/agentbox           the one CLI (setup/up/status/allow/...)
+    usr/bin/agentbox-egress    derives the LAN allowlist from the MCP config
+    usr/lib/tmpfiles.d/        creates the volume/config dirs with owners
+    etc/containers/systemd/    quadlets (agentbox, agent-vault, tailscale, net)
+    etc/systemd/system/        firewall / vault-init / provision units
+    etc/agentbox/firewall.nft  the container egress policy
+    etc/tailscale/serve/       tailnet HTTPS routes
+build.sh                   build + push the agent and OS images, then a disk
 ```
 
-## Quick start
+## Build and flash
 
 ```sh
-# 1. Build the ignition (edit nothing in agentbox.bu).
-./build.sh --user yourname --ssh-key "$(cat ~/.ssh/id_ed25519.pub)"
+# 1. edit os/config.toml -> admin username + SSH public key
+# 2. build and publish both images
+OWNER=youruser ./build.sh agent
+OWNER=youruser ./build.sh os
 
-# 2. Install Fedora CoreOS pointing coreos.inst.ignition_url at agentbox.ign.
+# 3. turn the OS image into a flashable disk (writes ./output/image/disk.raw)
+OWNER=youruser ./build.sh disk
+```
 
-# 3. First boot, over the LAN:
-ssh yourname@agentbox
-sudo agentbox setup                  # asks for the 3 keys, does the rest
+Then flash `output/image/disk.raw` to the target disk and boot. The box updates
+the OS itself with `bootc upgrade`; the agent image updates via
+`podman-auto-update.timer`.
+
+## First boot
+
+```sh
+ssh you@agentbox            # over the LAN
+sudo agentbox setup         # asks for the 3 keys, does the rest
 sudo systemd-cryptenroll --recovery-key /dev/disk/by-partlabel/root
 ```
 
-Save the desktop / Paseo / vault-owner passwords the setup prints — they are
-shown once.
+`setup` stores the Anthropic key, GitHub token and Tailscale auth key in the
+local vault, then starts Tailscale and the agent desktop. It prints the desktop
+/ Paseo / vault-owner passwords **once** — save them.
 
 ## Daily use
 
@@ -49,43 +74,15 @@ sudo agentbox allow clear              # revoke all manual entries
 
 ### Reaching a LAN/tailnet service from an MCP
 
-By default the container can only reach the internet. An MCP that talks to a
-local service (Home Assistant, a LAN model server, a NAS, another tailnet host)
-is allowed **automatically** — just point the MCP at it. Before the firewall
-comes up, `agentbox-egress` reads the enabled MCPs in `opencode.json`, pulls
-every LAN/tailnet address out of each one's `url`, `environment` and command
-arguments, resolves any url hostname, and opens exactly those:
+Point the MCP at it — no extra step. Before the firewall comes up,
+`agentbox-egress` reads the enabled MCPs in `opencode.json`, pulls every
+LAN/tailnet address out of each one's `url`, `environment` and command
+arguments, resolves url hostnames, and opens exactly those. For anything a
+config can't express, use `sudo agentbox allow`.
 
-```jsonc
-"home-assistant": {
-  "type": "local",
-  "command": ["ha-mcp"],
-  "environment": { "HA_URL": "http://192.168.1.20:8123" },  // -> 192.168.1.20
-  "enabled": true
-}
-```
+The host itself and mDNS `.local` names stay unreachable by design.
 
-If something can't be expressed in an MCP's config (a shared service, a name
-the box can't resolve at boot), add it explicitly — it augments the derived
-list and survives reboots:
-
-```sh
-sudo agentbox allow 192.168.1.0/24 100.90.0.7 # a subnet + one tailnet host
-sudo agentbox allow                           # show the manual list
-```
-
-Both lists are IPv4/IPv6 per-destination, not per-port. Two things they
-deliberately do **not** do:
-
-- They do not expose the **host itself**. A service bound on the host stays
-  unreachable; run it as a container on the `agentbox` network instead.
-- They do not make mDNS `.local` names resolvable — use an IP or a name your
-  DNS server knows.
-
-Every destination is another place a compromised agent could pivot to, so keep
-it as small as the MCP actually needs.
-
-URLs, both tailnet-only:
+## URLs (tailnet only)
 
 | URL | What |
 | --- | --- |
@@ -98,10 +95,22 @@ URLs, both tailnet-only:
 
 ## Before you build
 
-- The Tailscale auth key must be **tagged `tag:agentbox`** and that tag must be
+- The Tailscale auth key must be **tagged `tag:agentbox`**, and that tag must be
   allowed to mint HTTPS certs in your tailnet ACLs.
 - The GitHub token should be **fine-grained and repo-scoped**; the Anthropic key
-  should have a **spend limit**. The box brokers these keys, so a key's blast
-  radius is whatever the key itself allows.
-- Not covered: a Chromium-in-container escape, or misuse within what an API key
-  permits.
+  should have a **spend limit**. The box brokers these, so a key's blast radius
+  is whatever the key itself allows.
+- The registry namespace must exist and (for the box to pull) the agent image
+  must be pullable without interactive auth.
+
+## Known gaps
+
+- **Disk encryption / TPM**: the previous Ignition build sealed the root with
+  the TPM. In the bootc flow this is an install-time choice — pass the
+  filesystem/encryption option to bootc-image-builder (or enroll
+  `systemd-cryptenroll` right after install). Confirm the exact current flag
+  against your bootc-image-builder version before relying on it.
+- **Hostname**: set it at install time (`--hostname` on the installer, or
+  `hostnamectl`); it is deliberately not baked into the image.
+- A Chromium-in-container escape, or misuse within what an API key allows, is
+  out of scope.

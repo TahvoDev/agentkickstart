@@ -1,0 +1,26 @@
+# agentbox OS image (bootc).
+#
+# The host is deliberately tiny: podman + the systemd/quadlet plumbing. The
+# XFCE desktop and both broker containers run as containers; the OS just
+# orchestrates them. Build with the repo root as context:
+#
+#   podman build -f os/Containerfile -t ghcr.io/OWNER/agentbox-os:latest .
+#
+# Pin the base to a Fedora release once you have a known-good one.
+FROM quay.io/fedora/fedora-bootc:latest
+
+RUN dnf -y install podman nftables jq curl openssh-server \
+ && dnf -y clean all \
+ && rm -rf /var/cache/* /var/lib/dnf/*
+
+# Host payload, one source of truth per file (see os/system/): systemd units,
+# quadlets, tmpfiles, the agentbox CLI, the egress deriver and the firewall.
+COPY os/system/ /
+# The MCP config is also what agentbox-egress reads to learn which LAN hosts
+# the containers may reach, so bake a copy on the host too.
+COPY agent/opencode.json /etc/agentbox/opencode.json
+
+RUN systemctl enable \
+      agentbox-firewall.service agent-vault-init.service \
+      agentbox-provision.service podman-auto-update.timer sshd.service \
+ && systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target

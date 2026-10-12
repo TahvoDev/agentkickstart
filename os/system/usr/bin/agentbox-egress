@@ -1,0 +1,65 @@
+#!/bin/bash
+# agentbox-egress - allow the LAN/tailnet hosts the configured MCP
+# servers point at, so pointing an MCP at a local service (Home
+# Assistant, a LAN model server, a NAS, another tailnet host) needs
+# no extra step.
+#
+# Reads the enabled MCPs in opencode.json and extracts every address
+# they mention - a remote MCP's url host, an address in an MCP's
+# environment, or a command argument - resolving url hostnames.
+# Only addresses in the ranges the base firewall blocks are emitted
+# (public hosts are already reachable). Writes firewall.mcp.nft,
+# which agentbox-firewall.service loads. `agentbox allow` still adds
+# extra destinations on top.
+set -uo pipefail
+
+CFG=${1:-/etc/agentbox/opencode.json}
+OUT=/etc/agentbox/firewall.mcp.nft
+tmp=$(mktemp) || exit 0
+trap 'rm -f "$tmp"' EXIT
+command -v jq >/dev/null 2>&1 && [ -r "$CFG" ] || { rm -f "$OUT"; exit 0; }
+
+# Every string an enabled MCP carries.
+cand=$(jq -r '
+  .mcp // {} | to_entries[]
+  | select(.value.enabled != false)
+  | .value
+  | ( .url // empty ),
+    ( ( .environment // {} )[]? ),
+    ( ( .command // [] )[]? )
+' "$CFG" 2>/dev/null) || cand=
+
+priv4='^(10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2[0-9]|3[01])\.|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.)'
+
+v4=$(printf '%s\n' "$cand" \
+       | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?' | grep -E "$priv4")
+v6=$(printf '%s\n' "$cand" \
+       | grep -oiE '[0-9a-f]{0,4}(:[0-9a-f]{0,4}){2,}(/[0-9]{1,3})?' | grep -iE '^(f[cd]|fe[89ab])')
+
+# url hostnames -> their addresses (best effort).
+for raw in $(printf '%s\n' "$cand" | grep -oE 'https?://[^/"?[:space:]]+'); do
+  h=$(printf '%s' "$raw" | sed -E 's#^https?://##; s#^\[([^]]+)\].*#\1#; s#:[0-9]+$##')
+  [ -n "$h" ] || continue
+  printf '%s' "$h" | grep -qE '^[0-9]+(\.[0-9]+){3}$|:' && continue  # IP literal
+  for a in $(timeout 5 getent ahostsv4 "$h" 2>/dev/null | awk '{print $1}' | sort -u); do
+    printf '%s\n' "$a" | grep -qE "$priv4" && v4="$v4
+$a"
+  done
+done
+
+v4=$(printf '%s\n' "$v4" | tr ' ' '\n' | sort -u | grep -v '^$')
+v6=$(printf '%s\n' "$v6" | tr ' ' '\n' | sort -u | grep -v '^$')
+
+emit() {  # emit <set> <newline-separated tokens>
+  local set=$1 el
+  el=$(printf '%s\n' "$2" | grep -v '^$' | paste -sd, -)
+  [ -n "$el" ] && echo "add element inet agentbox $set { $el }"
+  return 0
+}
+{
+  emit allow_lan       "$(printf '%s\n' "$v4" | grep -v '/')"
+  emit allow_lan_cidr  "$(printf '%s\n' "$v4" | grep    '/')"
+  emit allow_lan6      "$(printf '%s\n' "$v6" | grep -v '/')"
+  emit allow_lan6_cidr "$(printf '%s\n' "$v6" | grep    '/')"
+} > "$tmp"
+mv "$tmp" "$OUT"

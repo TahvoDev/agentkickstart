@@ -1,0 +1,13 @@
+[Unit]
+Description=Sync agentbox secrets from the local Agent Vault
+Requires=agent-vault.service
+After=agent-vault.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/agentbox provision
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

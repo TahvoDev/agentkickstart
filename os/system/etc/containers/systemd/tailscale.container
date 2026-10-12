@@ -1,0 +1,31 @@
+[Unit]
+Description=Tailscale
+Requires=agentbox-provision.service
+After=agentbox-provision.service network-online.target
+Wants=network-online.target
+
+[Container]
+ContainerName=tailscale
+Image=docker.io/tailscale/tailscale:stable
+AutoUpdate=registry
+Network=host
+AddDevice=/dev/net/tun
+AddCapability=NET_ADMIN
+AddCapability=NET_RAW
+# Needed for /dev/net/tun under SELinux; tighten later
+SecurityLabelDisable=true
+Volume=/var/lib/tailscale:/var/lib/tailscale
+# Mount only the serve dir so tailscale.env is not visible inside
+Volume=/etc/tailscale/serve:/config
+Environment=TS_HOSTNAME=agentbox
+Environment=TS_STATE_DIR=/var/lib/tailscale
+Environment=TS_USERSPACE=false
+Environment=TS_SERVE_CONFIG=/config/serve.json
+Environment=TS_EXTRA_ARGS=--advertise-tags=tag:agentbox
+EnvironmentFile=/etc/agentbox/tailscale.env
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

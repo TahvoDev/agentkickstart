@@ -1,0 +1,18 @@
+[Unit]
+Description=agentbox container network isolation
+# After the network so url hostnames in the MCP config can be resolved.
+Wants=network-online.target
+After=network-online.target
+Before=agent-vault.service agentbox.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Derive the MCP allowlist, then apply base policy + derived + manual
+# (`agentbox allow`) overlays as one atomic nft transaction, so a bad
+# allowlist cannot leave the table missing or half-applied.
+ExecStart=/bin/bash -c '/usr/bin/agentbox-egress || true; { for f in /etc/agentbox/firewall.nft /etc/agentbox/firewall.mcp.nft /etc/agentbox/firewall.allow.nft; do if [ -s "$f" ]; then cat "$f"; fi; done; } > /run/agentbox-firewall.nft; /usr/sbin/nft -f /run/agentbox-firewall.nft'
+ExecStop=-/usr/sbin/nft delete table inet agentbox
+
+[Install]
+WantedBy=multi-user.target
