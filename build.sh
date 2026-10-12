@@ -62,10 +62,21 @@ case "${1:-}" in
       printf '#!/bin/sh\nexit 0\n' > "$shim/$c"; chmod +x "$shim/$c"
     done
 
+    # The builder container pulls the OS ref itself, so hand it registry
+    # creds: mount an authfile and point REGISTRY_AUTH_FILE at it. Use the
+    # caller's ($REGISTRY_AUTH_FILE) if set, else root's. Without this a
+    # private OS image fails to pull with "unauthorized".
+    auth=${REGISTRY_AUTH_FILE:-/etc/containers/auth.json}
+    authmnt=()
+    if "${SUDO[@]}" test -r "$auth"; then
+      authmnt=(-v "$auth:/etc/containers/auth.json:ro" -e REGISTRY_AUTH_FILE=/etc/containers/auth.json)
+    fi
+
     # Rootful + --privileged is required (it mounts devtmpfs); mount the
     # rootful store so it finds a LOCAL=1 image by ref.
     mkdir -p "$HERE/output"
     "${SUDO[@]}" podman run --rm --privileged \
+      "${authmnt[@]}" \
       -v /var/lib/containers/storage:/var/lib/containers/storage \
       -v "$HERE/output:/output" \
       -v "$HERE/os/installer.toml:/installer.toml:ro" \
