@@ -24,7 +24,7 @@ agent/                     the agent desktop container image
   start-agent.sh
 os/                        the bootc OS image
   Containerfile            packages + COPY the payload + enable units
-  installer.toml           installer blueprint (admin user, kickstart: TPM + recovery)
+  installer.toml           installer blueprint (kickstart: TPM + recovery; user chosen at install)
   system/                  the host payload, one file per source of truth
     usr/bin/agentbox           the one CLI (setup/up/status/allow/...)
     usr/bin/agentbox-egress    derives the LAN allowlist from the MCP config
@@ -39,19 +39,19 @@ build.sh                   build + push both images, then the installer ISO
 ## Build and install
 
 ```sh
-# 1. edit os/installer.toml -> admin username + SSH public key
-# 2. build and publish both images (the box pulls these at runtime)
+# build and publish both images (the box pulls these at runtime)
 OWNER=youruser ./build.sh agent
 OWNER=youruser ./build.sh os
-# 3. build the installer ISO (local only, no registry)
+# build the installer ISO
 ./build.sh installer                     # -> ./output/install.iso
 ```
 
-Boot `output/install.iso`, pick the target disk and tick **encrypt my data** in
-the Anaconda UI. `%post` then binds the encrypted root to the TPM, writes the
-recovery key to `/root/recovery-key.txt`, and you reboot into the box. The OS
-updates itself with `bootc upgrade`; the agent image updates via
-`podman-auto-update.timer`.
+Nothing machine-specific is baked into the ISO. Boot `output/install.iso`; the
+Anaconda UI asks for everything: pick the target disk, tick **encrypt my data**,
+and create the admin user (tick **Make this user administrator**). `%post` then
+binds the encrypted root to the TPM, writes the recovery key to
+`/root/recovery-key.txt`, and you reboot into the box. The OS updates itself
+with `bootc upgrade`; the agent image updates via `podman-auto-update.timer`.
 
 ### Requirements for the build host
 
@@ -74,9 +74,13 @@ updates itself with `bootc upgrade`; the agent image updates via
 
 ## First boot
 
+Anaconda creates the admin user with a password (it has no SSH-key field), so
+log in with that password and install your key:
+
 ```sh
-ssh you@agentbox            # over the LAN
-sudo agentbox setup         # asks for the 3 keys, does the rest
+ssh you@agentbox                 # password you set during install
+ssh-copy-id you@agentbox         # add your key (optional, then disable password auth)
+sudo agentbox setup              # asks for the 3 API keys, does the rest
 ```
 
 The disk encryption, TPM binding and recovery key were already done by the

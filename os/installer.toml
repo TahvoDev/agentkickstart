@@ -1,20 +1,24 @@
 # image-builder blueprint for the installer ISO (bootc-installer / Anaconda).
 #
-#   OWNER=<ns> ./build.sh installer      ->   output/install.iso
+#   [LOCAL=1] ./build.sh installer      ->   output/install.iso
 #
-# The installer is interactive: the operator picks the disk and ticks
-# "encrypt my data" in the Anaconda UI. A %post script then binds the LUKS
-# root to the TPM and mints a recovery key.
+# Everything is entered in the interactive Anaconda UI: the target disk,
+# "encrypt my data", and the admin user (tick "Make this user administrator"
+# so it gets sudo/wheel). A %post script then binds the LUKS root to the TPM
+# and mints a recovery key. Nothing machine-specific is baked here, so the ISO
+# is generic and shareable.
 #
-# EDIT: admin username + SSH public key (in the `user` line below).
-#
-# Note: a custom kickstart `contents` is incompatible with the
-# [[customizations.user]] stanza, so the admin user is declared in kickstart.
+# SSH key: Anaconda's GUI has no SSH-public-key field (only a "Allow root SSH
+# login with password" checkbox), so SSH starts with the password set for the
+# admin user. Add your key after first login with `ssh-copy-id`, then turn
+# password auth off if you want key-only. (A custom kickstart `contents` is
+# also incompatible with a [[customizations.user]] stanza, so the user cannot
+# be declared here anyway.)
+
 [customizations.installer.kickstart]
 contents = """
 graphical
 rootpw --lock
-user --name=CHANGEME_USER --groups=wheel --sshkey="CHANGEME_SSH_PUBLIC_KEY"
 %post --interpreter=/bin/bash --erroronfail
 # The GUI set up the encrypted root; find the LUKS device behind it.
 root=$(findmnt -n -o SOURCE /)
