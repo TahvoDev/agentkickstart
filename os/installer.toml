@@ -1,0 +1,27 @@
+# image-builder blueprint for the installer ISO (bootc-installer / Anaconda).
+#
+#   OWNER=<ns> ./build.sh installer      ->   output/install.iso
+#
+# The installer is interactive: the operator picks the disk and ticks
+# "encrypt my data" in the Anaconda UI. A %post script then binds the LUKS
+# root to the TPM and mints a recovery key.
+#
+# EDIT: admin username + SSH public key (in the `user` line below).
+#
+# Note: a custom kickstart `contents` is incompatible with the
+# [[customizations.user]] stanza, so the admin user is declared in kickstart.
+[customizations.installer.kickstart]
+contents = """
+graphical
+rootpw --lock
+user --name=CHANGEME_USER --groups=wheel --sshkey="CHANGEME_SSH_PUBLIC_KEY"
+%post --interpreter=/bin/bash --erroronfail
+# The GUI set up the encrypted root; find the LUKS device behind it.
+root=$(findmnt -n -o SOURCE /)
+cryptdev=$(cryptsetup status "$root" 2>/dev/null | awk '/device:/{print $2}')
+cryptdev=${cryptdev:-$(blkid -t TYPE=crypto_LUKS -o device | head -n1)}
+# Bind to the TPM (PCR 7 = Secure Boot state) and print a recovery key.
+systemd-cryptenroll --tpm2-device=auto --tpm2-pcrs=7 "$cryptdev"
+systemd-cryptenroll --recovery-key "$cryptdev" | tee /root/recovery-key.txt
+%end
+"""

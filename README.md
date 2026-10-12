@@ -6,12 +6,13 @@ reached over Tailscale, with credentials brokered by a local Agent Vault. The
 host is immutable and deliberately tiny; the desktop and both brokers run as
 containers.
 
-Two artifacts, one repo:
+Three artifacts, one repo:
 
 | Artifact | Source | Where it goes |
 | --- | --- | --- |
 | **agent image** (`ghcr.io/OWNER/agentbox-agent`) | `agent/` | pulled by the box at runtime |
-| **OS image** (`ghcr.io/OWNER/agentbox-os`) | `os/` | flashed to a disk by bootc-image-builder |
+| **OS image** (`ghcr.io/OWNER/agentbox-os`) | `os/` | installed by the installer ISO |
+| **installer ISO** (`output/install.iso`) | `os/installer.toml` | booted to install the OS image |
 
 ## Layout
 
@@ -23,7 +24,7 @@ agent/                     the agent desktop container image
   start-agent.sh
 os/                        the bootc OS image
   Containerfile            packages + COPY the payload + enable units
-  config.toml              bootc-image-builder install config (user + SSH key)
+  installer.toml           installer blueprint (admin user, kickstart: TPM + recovery)
   system/                  the host payload, one file per source of truth
     usr/bin/agentbox           the one CLI (setup/up/status/allow/...)
     usr/bin/agentbox-egress    derives the LAN allowlist from the MCP config
@@ -32,36 +33,41 @@ os/                        the bootc OS image
     etc/systemd/system/        firewall / vault-init / provision units
     etc/agentbox/firewall.nft  the container egress policy
     etc/tailscale/serve/       tailnet HTTPS routes
-build.sh                   build + push the agent and OS images, then a disk
+build.sh                   build + push both images, then the installer ISO
 ```
 
-## Build and flash
+## Build and install
 
 ```sh
-# 1. edit os/config.toml -> admin username + SSH public key
-# 2. build and publish both images
+# 1. edit os/installer.toml -> admin username + SSH public key
+# 2. build and publish both images, then the installer ISO
 OWNER=youruser ./build.sh agent
 OWNER=youruser ./build.sh os
-
-# 3. turn the OS image into a flashable disk (writes ./output/image/disk.raw)
-OWNER=youruser ./build.sh disk
+OWNER=youruser ./build.sh installer      # writes ./output/install.iso
 ```
 
-Then flash `output/image/disk.raw` to the target disk and boot. The box updates
-the OS itself with `bootc upgrade`; the agent image updates via
+Boot `output/install.iso`, pick the target disk and tick **encrypt my data** in
+the Anaconda UI. `%post` then binds the encrypted root to the TPM, writes the
+recovery key to `/root/recovery-key.txt`, and you reboot into the box. The OS
+updates itself with `bootc upgrade`; the agent image updates via
 `podman-auto-update.timer`.
+
+The `installer` step runs a privileged `image-builder` container, so run it on
+a normal host (it needs to chcon its build store, which a nested/unprivileged
+container without SELinux cannot).
 
 ## First boot
 
 ```sh
 ssh you@agentbox            # over the LAN
 sudo agentbox setup         # asks for the 3 keys, does the rest
-sudo systemd-cryptenroll --recovery-key /dev/disk/by-partlabel/root
 ```
 
-`setup` stores the Anthropic key, GitHub token and Tailscale auth key in the
-local vault, then starts Tailscale and the agent desktop. It prints the desktop
-/ Paseo / vault-owner passwords **once** — save them.
+The disk encryption, TPM binding and recovery key were already done by the
+installer (`/root/recovery-key.txt` on the target). `setup` stores the Anthropic
+key, GitHub token and Tailscale auth key in the local vault, then starts
+Tailscale and the agent desktop. It prints the desktop / Paseo / vault-owner
+passwords **once** — save them.
 
 ## Daily use
 
@@ -105,12 +111,10 @@ The host itself and mDNS `.local` names stay unreachable by design.
 
 ## Known gaps
 
-- **Disk encryption / TPM**: the previous Ignition build sealed the root with
-  the TPM. In the bootc flow this is an install-time choice — pass the
-  filesystem/encryption option to bootc-image-builder (or enroll
-  `systemd-cryptenroll` right after install). Confirm the exact current flag
-  against your bootc-image-builder version before relying on it.
-- **Hostname**: set it at install time (`--hostname` on the installer, or
+- **Hostname**: set it at install time (the installer's hostname field, or
   `hostnamectl`); it is deliberately not baked into the image.
+- **TPM unlock and firmware updates**: root is bound to PCR 7 (Secure Boot
+  state), so a firmware/Secure Boot change can invalidate the TPM keyslot — the
+  recovery key written by the installer is the way back in. Keep it safe.
 - A Chromium-in-container escape, or misuse within what an API key allows, is
   out of scope.

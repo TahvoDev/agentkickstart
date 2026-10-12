@@ -1,0 +1,4 @@
+# Default root filesystem for bootc install, so `bootc install to-disk` (and
+# the installer) knows the type without being told on the command line.
+[install.filesystem.root]
+type = "xfs"
