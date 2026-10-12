@@ -69,6 +69,14 @@ jobs:
           sign "ghcr.io/$OWNER/agentbox-agent:$AGENT_TAG"
           sign "ghcr.io/$OWNER/agentbox-os:$OS_TAG"
 
+      - name: verify signatures (self-check)
+        run: |
+          for image in "ghcr.io/$OWNER/agentbox-agent:$AGENT_TAG" "ghcr.io/$OWNER/agentbox-os:$OS_TAG"; do
+            cosign verify "$image" \
+              --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/build.yml@.*$" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          done
+
   installer:
     needs: images
     runs-on: ubuntu-latest
