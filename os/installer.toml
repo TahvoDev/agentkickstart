@@ -8,12 +8,11 @@
 # and mints a recovery key. Nothing machine-specific is baked here, so the ISO
 # is generic and shareable.
 #
-# SSH key: Anaconda's GUI has no SSH-public-key field (only a "Allow root SSH
-# login with password" checkbox), so SSH starts with the password set for the
-# admin user. Add your key after first login with `ssh-copy-id`, then turn
-# password auth off if you want key-only. (A custom kickstart `contents` is
-# also incompatible with a [[customizations.user]] stanza, so the user cannot
-# be declared here anyway.)
+# SSH key: Anaconda has no SSH-public-key field in any UI, so SSH starts with
+# the password set for the admin user. The key is handled after install, by
+# `sudo agentbox setup` (which installs it and offers key-only). (A custom
+# kickstart `contents` is also incompatible with a [[customizations.user]]
+# stanza, so the user cannot be declared here anyway.)
 #
 # UI: image-builder boots this ISO with "inst.text" (the text installer).
 # Anaconda offers a newer Cockpit-based Web UI, chosen automatically when it is

@@ -26,14 +26,14 @@ os/                        the bootc OS image
   Containerfile            packages + COPY the payload + enable units
   installer.toml           installer blueprint (kickstart: TPM + recovery; user chosen at install)
   system/                  the host payload, one file per source of truth
-    usr/bin/agentbox           the one CLI (setup/up/status/allow/...)
+    usr/bin/agentbox           the one CLI (setup/up/status/authorize/allow/...)
     usr/bin/agentbox-egress    derives the LAN allowlist from the MCP config
     usr/lib/tmpfiles.d/        creates the volume/config dirs with owners
     etc/containers/systemd/    quadlets (agentbox, agent-vault, tailscale, net)
     etc/systemd/system/        firewall / vault-init / provision units
     etc/agentbox/firewall.nft  the container egress policy
     etc/tailscale/serve/       tailnet HTTPS routes
-build.sh                   build + push both images, then the installer ISO
+build.sh                   build + push both images; build the installer ISO
 ```
 
 ## Build and install

@@ -86,39 +86,26 @@ LOCAL=1 ./build.sh installer     # prompts for sudo; -> output/install.iso
 - A custom kickstart `contents` is **incompatible** with a
   `[[customizations.user]]` stanza ("kickstart users and/or groups are not
   compatible with user-supplied kickstart content").
-- **Anaconda's GUI has no SSH-public-key field** (only "Allow root SSH login with
-  password"). So the admin user is created interactively with a password; SSH key
-  is added afterwards (`ssh-copy-id`). If you want a key prompt, it has to be a
-  first-boot console prompt we write ourselves.
 - The installer bakes its payload ref as the box's `bootc upgrade` source — so
   build it against the real registry ref, not `localhost` (that's the `LOCAL=1`
   caveat).
 
-## SSH keys: there is no install-time prompt (by design)
-From the bootc docs (`bootc-installation.7`, `bootc-users-and-groups.7`):
-- Every SSH-key mechanism is a **CLI flag or pre-config**, never an interactive
-  prompt: `bootc install --root-ssh-authorized-keys` (a flag),
-  **systemd credentials** (SMBIOS — qemu/virt only, not bare metal),
-  **cloud-init/Ignition** (metadata), and `tmpfiles.d` `authorized_keys`
-  snippets (baked into the image).
-- bootc explicitly recommends *runtime* config over install-time config:
-  "most configuration should happen at runtime—either at first boot or on
-  every boot", via a **`ConditionFirstBoot=yes` systemd unit** or similar.
-- Anaconda can inject users at provisioning time (interactively or kickstart),
-  but has no SSH-key field in any UI; kickstart `user --sshkey` is pre-config.
+## SSH keys: no install-time prompt (by design)
+Nothing prompts for an SSH key at install, and that's intentional:
+- bootc's SSH-key mechanisms are all **CLI-flag or pre-config**:
+  `bootc install --root-ssh-authorized-keys` (flag), **systemd credentials**
+  (SMBIOS — qemu/virt only), **cloud-init/Ignition** (metadata), and
+  `tmpfiles.d` `authorized_keys` snippets (image content). The docs explicitly
+  prefer runtime config: "most configuration should happen at runtime—either at
+  first boot or on every boot".
+- Anaconda (text, GTK, or Web UI) has **no SSH-key field**; kickstart
+  `user --sshkey` is pre-config.
 
-**Decision:** keep the ISO generic (no per-user edit, nothing pre-baked).
-Install creates the admin user + password; SSH in with the password and add the
-key:
-```sh
-ssh-copy-id you@agentbox        # Fedora sshd defaults to PasswordAuthentication yes
-# then, for key-only, drop a /etc/ssh/sshd_config.d/50-no-password.conf with
-# PasswordAuthentication no
-```
-**Implemented:** `agentbox setup` calls `authorize` — it prompts for the SSH
-public key, installs it for the sudo user, and offers to disable password auth
-(key-only). `agentbox authorize add` adds more keys later. This is in
-`/usr/bin/agentbox` (the OS image), not the installer, so no pre-build edit.
+So the ISO stays generic and the key is added after install, by `agentbox`:
+`sudo agentbox setup` prompts for the key, installs it for the sudo user
+(`~/.ssh/authorized_keys`, dir 0700 / file 0600), and offers to disable password
+auth. `sudo agentbox authorize add` adds more keys later. Fedora's default sshd
+allows password login, so the very first login uses the installer password.
 
 ## Repo layout
 ```
