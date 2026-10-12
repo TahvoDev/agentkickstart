@@ -40,10 +40,11 @@ build.sh                   build + push both images, then the installer ISO
 
 ```sh
 # 1. edit os/installer.toml -> admin username + SSH public key
-# 2. build and publish both images, then the installer ISO
+# 2. build and publish both images (the box pulls these at runtime)
 OWNER=youruser ./build.sh agent
 OWNER=youruser ./build.sh os
-OWNER=youruser ./build.sh installer      # writes ./output/install.iso
+# 3. build the installer ISO (local only, no registry)
+./build.sh installer                     # -> ./output/install.iso
 ```
 
 Boot `output/install.iso`, pick the target disk and tick **encrypt my data** in
@@ -52,9 +53,22 @@ recovery key to `/root/recovery-key.txt`, and you reboot into the box. The OS
 updates itself with `bootc upgrade`; the agent image updates via
 `podman-auto-update.timer`.
 
-The `installer` step runs a privileged `image-builder` container, so run it on
-a normal host (it needs to chcon its build store, which a nested/unprivileged
-container without SELinux cannot).
+### Requirements for the build host
+
+- **podman**, and **`sudo`** for the `installer` step. The `image-builder`
+  container mounts `devtmpfs` and writes an OS image, so it must run *rootful*
+  (`build.sh` re-runs it under `sudo` via `$SUDO`). Rootless podman cannot do
+  this — a rootless run fails with `mount: /dev: permission denied`.
+- **No SELinux required.** On hosts without it (e.g. Ubuntu) `build.sh` shims
+  `chcon`/`restorecon` out of the builder, which otherwise fails trying to
+  relabel its store (`chcon: … Operation not permitted`).
+- The `agent`/`os` steps push to `$REGISTRY/$OWNER`; the box pulls the agent
+  image from there at runtime, and `bootc upgrade` pulls the OS image. The
+  `installer` step is fully local — it builds the OS image into rootful storage
+  as `localhost/agentbox-os:latest` and feeds it to the builder, so it needs no
+  registry or network push.
+- Don't run the build from inside an unprivileged container: the `devtmpfs`
+  mount needs real root.
 
 ## First boot
 

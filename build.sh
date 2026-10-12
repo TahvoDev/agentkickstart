@@ -1,52 +1,73 @@
 #!/usr/bin/env bash
-# build.sh - build and publish the agent image and the OS image, then the
-# interactive installer ISO.
+# build.sh - build the agent image, the OS image, and the installer ISO.
 #
 #   OWNER=<registry-namespace> ./build.sh agent      # build + push the agent image
 #   OWNER=<registry-namespace> ./build.sh os         # build + push the OS image
-#   OWNER=<registry-namespace> ./build.sh installer  # build output/install.iso
+#   ./build.sh installer                             # build ./output/install.iso
 #
-# The agent image is pulled by the box at runtime; the OS image is what the
-# installer lays down. Edit os/installer.toml (admin user + SSH key) first.
+# agent/os need a registry (the box pulls the agent image at runtime and the OS
+# image is what `bootc upgrade` fetches). installer is a purely local build: it
+# compiles the OS image into rootful podman storage and feeds it to the
+# image-builder container, so no registry is required.
+#
+# Edit os/installer.toml (admin user + SSH key) before building the ISO.
 set -euo pipefail
 
 REGISTRY=${REGISTRY:-ghcr.io}
-: "${OWNER:?set OWNER to your registry namespace, e.g. OWNER=youruser}"
 AGENT_TAG=${AGENT_TAG:-latest}
 OS_TAG=${OS_TAG:-latest}
-
-AGENT_IMAGE="$REGISTRY/$OWNER/agentbox-agent:$AGENT_TAG"
-OS_IMAGE="$REGISTRY/$OWNER/agentbox-os:$OS_TAG"
 BUILDER_IMAGE=${BUILDER_IMAGE:-ghcr.io/osbuild/image-builder-cli:latest}
+LOCAL_OS=${LOCAL_OS:-localhost/agentbox-os:latest}
+ROOT_FS=${ROOT_FS:-xfs}
 HERE=$(cd -- "$(dirname -- "$0")" && pwd)
+SUDO=(); [ "$(id -u)" -eq 0 ] || SUDO=(sudo)
 
-build() { podman build -f "$1" -t "$2" "$HERE"; }
+usage() { echo "usage: OWNER=<ns> $0 agent|os|installer" >&2; exit 2; }
 
 case "${1:-}" in
   agent)
-    build "$HERE/agent/Containerfile" "$AGENT_IMAGE"
-    podman push "$AGENT_IMAGE"
+    : "${OWNER:?set OWNER to your registry namespace, e.g. OWNER=youruser}"
+    img="$REGISTRY/$OWNER/agentbox-agent:$AGENT_TAG"
+    podman build -f "$HERE/agent/Containerfile" -t "$img" "$HERE"
+    podman push "$img"
     ;;
+
   os)
-    build "$HERE/os/Containerfile" "$OS_IMAGE"
-    podman push "$OS_IMAGE"
+    : "${OWNER:?set OWNER to your registry namespace, e.g. OWNER=youruser}"
+    img="$REGISTRY/$OWNER/agentbox-os:$OS_TAG"
+    podman build -f "$HERE/os/Containerfile" -t "$img" "$HERE"
+    podman push "$img"
     ;;
+
   installer)
+    # 1. Build the OS image into *rootful* storage (the builder uses local
+    #    container storage, so no registry or network pull is needed).
+    "${SUDO[@]}" podman build -f "$HERE/os/Containerfile" -t "$LOCAL_OS" "$HERE"
+
+    # 2. No-op chcon/restorecon shims: the image-builder container relabels its
+    #    store at startup, which fails on hosts without SELinux (Ubuntu).
+    shim=$(mktemp -d); trap 'rm -rf "$shim"' EXIT
+    for c in chcon restorecon fixfiles setfiles matchpathcon selabel; do
+      printf '#!/bin/sh\nexit 0\n' > "$shim/$c"; chmod +x "$shim/$c"
+    done
+
+    # 3. Build the ISO. Rootful + --privileged is required (it mounts devtmpfs);
+    #    mount the rootful store so it finds the OS image by ref.
     mkdir -p "$HERE/output"
-    podman run --rm --privileged --security-opt label=type:unconfined_t \
+    "${SUDO[@]}" podman run --rm --privileged \
+      -v /var/lib/containers/storage:/var/lib/containers/storage \
       -v "$HERE/output:/output" \
       -v "$HERE/os/installer.toml:/installer.toml:ro" \
+      -v "$shim:/shim:ro" \
+      -e PATH=/shim:/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin \
       "$BUILDER_IMAGE" \
       build --output-dir /output bootc-installer \
-        --bootc-ref "$OS_IMAGE" \
-        --bootc-installer-payload-ref "$OS_IMAGE" \
-        --bootc-pull-container \
-        --bootc-default-fs "${ROOT_FS:-xfs}" \
+        --bootc-ref "$LOCAL_OS" \
+        --bootc-installer-payload-ref "$LOCAL_OS" \
+        --bootc-default-fs "$ROOT_FS" \
         --blueprint /installer.toml
     echo "wrote $HERE/output/install.iso"
     ;;
-  *)
-    echo "usage: OWNER=<ns> $0 agent|os|installer" >&2
-    exit 2
-    ;;
+
+  *) usage ;;
 esac

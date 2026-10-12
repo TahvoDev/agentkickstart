@@ -11,7 +11,7 @@ FROM quay.io/fedora/fedora-bootc:latest
 
 RUN dnf -y install podman nftables jq curl openssh-server \
  && dnf -y clean all \
- && rm -rf /var/cache/* /var/lib/dnf/*
+ && rm -rf /var/cache/* /var/lib/dnf/* /run/dnf /var/log/dnf*.log /var/log/hawkey.log*
 
 # Host payload, one source of truth per file (see os/system/): systemd units,
 # quadlets, tmpfiles, the agentbox CLI, the egress deriver and the firewall.
