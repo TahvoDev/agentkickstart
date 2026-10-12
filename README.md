@@ -42,8 +42,8 @@ build.sh                   build + push both images; build the installer ISO
 # build and publish both images (the box pulls these at runtime)
 OWNER=youruser ./build.sh agent
 OWNER=youruser ./build.sh os
-# build the installer ISO
-./build.sh installer                     # -> ./output/install.iso
+# build the installer ISO (OWNER to pull the pushed OS image; or LOCAL=1)
+OWNER=youruser ./build.sh installer      # -> ./output/install.iso
 ```
 
 ### CI (pre-release)
@@ -66,11 +66,11 @@ track it); promote a digest to `:latest` and/or flip the packages public at
 release.
 
 Nothing machine-specific is baked into the ISO. Boot `output/install.iso`; the
-Anaconda UI asks for everything: pick the target disk, tick **encrypt my data**,
-and create the admin user (tick **Make this user administrator**). `%post` then
-binds the encrypted root to the TPM, writes the recovery key to
-`/root/recovery-key.txt`, and you reboot into the box. The OS updates itself
-with `bootc upgrade`; the agent image updates via `podman-auto-update.timer`.
+Anaconda text installer asks for everything: pick the target disk, enable
+encryption, and set the admin user/password. `%post` then binds the encrypted
+root to the TPM, writes the recovery key to `/root/recovery-key.txt`, and you
+reboot into the box. Update the OS with `bootc upgrade`; the agent image
+auto-updates via `podman-auto-update.timer`.
 
 ### Requirements for the build host
 
@@ -93,7 +93,7 @@ log in with that password first:
 
 ```sh
 ssh you@agentbox                 # password you set during install
-sudo agentbox setup              # prompts for your SSH public key + the 3 API keys
+sudo agentbox setup              # SSH key + 3 API keys (+ GHCR pull token if private)
 ```
 
 `setup` installs your SSH key for the admin user and offers to disable password
