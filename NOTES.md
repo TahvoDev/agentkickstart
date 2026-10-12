@@ -94,6 +94,31 @@ LOCAL=1 ./build.sh installer     # prompts for sudo; -> output/install.iso
   build it against the real registry ref, not `localhost` (that's the `LOCAL=1`
   caveat).
 
+## SSH keys: there is no install-time prompt (by design)
+From the bootc docs (`bootc-installation.7`, `bootc-users-and-groups.7`):
+- Every SSH-key mechanism is a **CLI flag or pre-config**, never an interactive
+  prompt: `bootc install --root-ssh-authorized-keys` (a flag),
+  **systemd credentials** (SMBIOS — qemu/virt only, not bare metal),
+  **cloud-init/Ignition** (metadata), and `tmpfiles.d` `authorized_keys`
+  snippets (baked into the image).
+- bootc explicitly recommends *runtime* config over install-time config:
+  "most configuration should happen at runtime—either at first boot or on
+  every boot", via a **`ConditionFirstBoot=yes` systemd unit** or similar.
+- Anaconda can inject users at provisioning time (interactively or kickstart),
+  but has no SSH-key field in any UI; kickstart `user --sshkey` is pre-config.
+
+**Decision:** keep the ISO generic (no per-user edit, nothing pre-baked).
+Install creates the admin user + password; SSH in with the password and add the
+key:
+```sh
+ssh-copy-id you@agentbox        # Fedora sshd defaults to PasswordAuthentication yes
+# then, for key-only, drop a /etc/ssh/sshd_config.d/50-no-password.conf with
+# PasswordAuthentication no
+```
+Optional future nicety (still "after install", zero pre-config): have
+`agentbox setup` prompt for the SSH public key on first run and install it,
+then disable password auth.
+
 ## Repo layout
 ```
 agent/      agent desktop image (Containerfile, opencode.json, nginx.conf, start-agent.sh)
