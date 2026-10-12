@@ -32,12 +32,20 @@ jobs:
       - name: free disk space (installer build is heavy)
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/share/swift /usr/local/.ghcup
 
-      # Both the user (agent/os push) and root (installer pulls the OS ref)
-      # stores need ghcr creds.
-      - name: ghcr login (user + root)
+      # Pin both auth files to fixed, owner-correct paths. Relying on the
+      # default store puts creds in /run/user/<uid>/containers/auth.json, which
+      # a root login can clobber root-owned, breaking the non-root build.
+      #   - runner user: $HOME/.config/containers/auth.json (builds + pushes)
+      #   - root: /etc/containers/auth.json (installer pulls the OS ref)
+      - name: ghcr login
+        env:
+          CR_TOKEN: ${{ github.token }}
         run: |
-          echo '${{ github.token }}' | podman login ghcr.io -u '${{ github.actor }}' --password-stdin
-          echo '${{ github.token }}' | sudo podman login ghcr.io -u '${{ github.actor }}' --password-stdin
+          AUTH="$HOME/.config/containers/auth.json"
+          mkdir -p "$(dirname "$AUTH")"
+          printf '%s' "$CR_TOKEN" | podman login --authfile "$AUTH" ghcr.io -u '${{ github.actor }}' --password-stdin
+          printf '%s' "$CR_TOKEN" | sudo podman login --authfile /etc/containers/auth.json ghcr.io -u '${{ github.actor }}' --password-stdin
+          echo "REGISTRY_AUTH_FILE=$AUTH" >> "$GITHUB_ENV"
 
       - name: build + push agent and OS images
         run: |
