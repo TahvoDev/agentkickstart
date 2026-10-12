@@ -13,7 +13,8 @@ on:
       - '**.md'
 
 permissions:
-  contents: read
+  # write: create/update the rolling `edge` release the ISO is published to.
+  contents: write
   packages: write
   # cosign keyless signing: the workflow's OIDC identity is the signer.
   id-token: write
@@ -96,6 +97,27 @@ jobs:
       - name: free disk space (ISO build is heavy)
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/share/swift /usr/local/.ghcup
 
+      # Ubuntu 26.04 ships the bwrap-userns-restrict AppArmor profile, which also
+      # attaches to /usr/bin/bwrap inside the privileged image-builder container
+      # and drops osbuild's stages into an unprivileged profile with no caps ->
+      # "fchownat() ... Operation not permitted" then "mount: /run/osbuild/
+      # containers/storage: permission denied". Install the supported local
+      # include (the override bootc uses on its own runners); no-op on 24.04,
+      # where the profile doesn't exist. Matters once ubuntu-latest bumps to 26.04.
+      - name: keep bwrap in its parent AppArmor profile (Ubuntu 26.04)
+        run: |
+          if sudo test -r /etc/apparmor.d/bwrap-userns-restrict &&
+             sudo test -r /sys/kernel/security/apparmor/profiles &&
+             sudo grep -qx 'bwrap (enforce)' /sys/kernel/security/apparmor/profiles; then
+            printf '%s\n' 'priority=100 allow file rwlkm /**,' 'priority=100 allow ix /**,' \
+              | sudo tee /etc/apparmor.d/local/bwrap-userns-restrict >/dev/null
+            sudo apparmor_parser -Q /etc/apparmor.d/bwrap-userns-restrict
+            sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+            echo "bwrap AppArmor override installed"
+          else
+            echo "bwrap-userns-restrict not enforced here; nothing to do"
+          fi
+
       # Rootful podman builds the installer container and pulls the payload;
       # both live in /var/lib/containers/storage, which the builder mounts.
       - name: ghcr login (user + root)
@@ -108,8 +130,21 @@ jobs:
       - name: build installer ISO
         run: ./build.sh installer
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: install-iso
-          path: output/install.iso
-          if-no-files-found: error
+      # Publish the ISO on the rolling `edge` prerelease. Create it once, then
+      # replace the asset each build (stable download URL:
+      # .../releases/download/edge/install.iso). Uses the preinstalled gh CLI, no
+      # extra action. NB: release assets cap at 2 GiB; install.iso is ~1.6 GiB.
+      - name: publish installer ISO to the 'edge' release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view edge >/dev/null 2>&1; then
+            gh release edit edge --notes "Rolling edge build from ${GITHUB_SHA} ($(date -u +%Y-%m-%dT%H:%MZ))."
+          else
+            gh release create edge --prerelease --target "$GITHUB_SHA" \
+              --title "agentbox installer (edge)" \
+              --notes "Rolling edge build from ${GITHUB_SHA}."
+          fi
+          gh release upload edge output/install.iso --clobber
+          gh release view edge --json assets \
+            -q '.assets[] | select(.name=="install.iso") | "\(.name) \(.size) bytes"'
