@@ -9,9 +9,9 @@
 # Pin the base to a Fedora release once you have a known-good one.
 FROM quay.io/fedora/fedora-bootc:latest
 
-RUN dnf -y install podman nftables jq curl openssh-server \
- && dnf -y clean all \
- && rm -rf /var/cache/* /var/lib/dnf/* /run/dnf /var/log/dnf*.log /var/log/hawkey.log*
+# No package installs: the base already ships podman, nftables, jq, curl and
+# openssh-server (verified on fc44). Re-add a dnf step only if a future base
+# drops one.
 
 # Host payload, one source of truth per file (see os/system/): systemd units,
 # quadlets, tmpfiles, the agentbox CLI, the egress deriver and the firewall.
