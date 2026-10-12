@@ -43,7 +43,34 @@ shown once.
 ```sh
 sudo agentbox up|status|logs|shell     # sync secrets, restart, inspect
 sudo agentbox login|logout|av <args>   # vault owner session / CLI
+sudo agentbox allow <ip|cidr>...       # let an MCP reach a LAN/tailnet host
+sudo agentbox allow clear              # revoke all of them
 ```
+
+### Reaching a LAN/tailnet service from an MCP
+
+By default the container can only reach the internet, so an MCP that talks to a
+local service (Home Assistant, a LAN model server, a NAS, another tailnet host)
+is blocked. Opt specific destinations in without opening the whole range:
+
+```sh
+sudo agentbox allow 192.168.1.20              # Home Assistant
+sudo agentbox allow 192.168.1.0/24 100.90.0.7 # a subnet + one tailnet host
+sudo agentbox allow                           # show the current allowlist
+```
+
+This edits `/etc/agentbox/firewall.allow.nft` and reloads the policy; it
+survives reboots. It is IPv4/IPv6 per-destination, not per-port.
+
+Two things the allowlist deliberately does **not** do:
+
+- It does not expose the **host itself**. A service bound on the host stays
+  unreachable; run it as a container on the `agentbox` network instead.
+- It does not make mDNS `.local` names resolvable — use an IP or a name your
+  DNS server knows.
+
+Every destination you add is another place a compromised agent could pivot to,
+so keep the list as small as the MCP actually needs.
 
 URLs, both tailnet-only:
 
