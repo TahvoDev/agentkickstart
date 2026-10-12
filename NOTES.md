@@ -33,7 +33,7 @@ mental model and the gotchas.
 LOCAL=1 ./build.sh installer     # prompts for sudo; -> output/install.iso
 ```
 - Builds the OS image + installer ISO **offline**. `sudo` is required (rootful
-  podman); the `chcon` shim is automatic.
+  podman).
 - Proves: OS image builds, ISO builds, Anaconda boots, disk pick + encryption,
   `%post` TPM + recovery, first boot reaches `agentbox setup`.
 - Won't show a working **desktop**: the installed box pulls the agent image from
@@ -54,7 +54,8 @@ LOCAL=1 ./build.sh installer     # prompts for sudo; -> output/install.iso
    has it (no PAT). See `.github/workflows/build.yml`; it tags `:edge` while
    testing.
 2. **CI**: `.github/workflows/build.yml` builds+pushes both images on `main`,
-   uploads `install.iso` as an artifact.
+   uploads `install.iso` as an artifact, and keyless-signs both images with
+   cosign (then self-verifies the signatures).
 3. **Runtime updates**: `bootc upgrade` (OS) + `podman-auto-update.timer` (agent).
 4. **Private packages** → `agentbox setup` takes a GHCR username + read-only
    token, stores them in the vault; `provision` writes `/etc/containers/auth.json`
@@ -65,8 +66,6 @@ LOCAL=1 ./build.sh installer     # prompts for sudo; -> output/install.iso
 ## Build-host gotchas (this Ubuntu box)
 - Rootless podman can't run the builder — it needs to `mount devtmpfs`
   (`mount: /dev: permission denied`). `build.sh` re-runs it under `sudo`.
-- Ubuntu has **no SELinux**; the builder `chcon`s its store and fails. `build.sh`
-  shims `chcon`/`restorecon`/`fixfiles` out of the builder image.
 - Don't build from inside an unprivileged container (devtmpfs needs real root).
 
 ## Installer UI: text vs the Cockpit Web UI
