@@ -1,0 +1,25 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "pinDigests": true,
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Quadlet Image= refs (third-party only; agentbox.image is a placeholder)",
+      "fileMatch": ["(^|/)os/system/.*/(tailscale|agent-vault)\\.container$"],
+      "matchStrings": [
+        "Image=(?<depName>[^@\\s]+):(?<currentValue>[^@\\s]+)(?:@(?<currentDigest>sha256:[a-f0-9]{64}))?"
+      ],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "build.sh BUILDER_IMAGE default",
+      "fileMatch": ["(^|/)build\\.sh$"],
+      "matchStrings": [
+        "BUILDER_IMAGE=\\$\\{BUILDER_IMAGE:-(?<depName>[^:]+/[^:]+):(?<currentValue>[^@\\s}]+)"
+      ],
+      "datasourceTemplate": "docker"
+    }
+  ]
+}

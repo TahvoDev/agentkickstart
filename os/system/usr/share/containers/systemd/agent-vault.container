@@ -7,7 +7,7 @@ Wants=network-online.target
 [Container]
 ContainerName=agent-vault
 # Keep in sync with the COPY --from in the agent Containerfile.
-Image=docker.io/infisical/agent-vault:0.40.0
+Image=docker.io/infisical/agent-vault:0.40.0@sha256:4d490e2586c553ea121fa404b66812ad40c246cc841b0cc746682d0a360bdf1e
 AutoUpdate=registry
 Network=agentbox.network
 User=10002

@@ -14,7 +14,7 @@ set -euo pipefail
 REGISTRY=${REGISTRY:-ghcr.io}
 AGENT_TAG=${AGENT_TAG:-latest}
 OS_TAG=${OS_TAG:-latest}
-BUILDER_IMAGE=${BUILDER_IMAGE:-ghcr.io/osbuild/image-builder-cli:latest}
+BUILDER_IMAGE=${BUILDER_IMAGE:-ghcr.io/osbuild/image-builder-cli:latest@sha256:aba150149bcc26ac3ae56e93628b8383767f0caf4c49dcc98fa2d2045c8b9487}
 LOCAL_OS=${LOCAL_OS:-localhost/agentbox-os:latest}
 ROOT_FS=${ROOT_FS:-xfs}
 HERE=$(cd -- "$(dirname -- "$0")" && pwd)

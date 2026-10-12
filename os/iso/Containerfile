@@ -1,7 +1,8 @@
 # Installer container for the `bootc-generic-iso` image type. image-builder
 # takes the kernel and EFI tree from THIS container (not the build host), so
 # the ISO builds anywhere with podman - no Fedora build host required.
-FROM quay.io/fedora/fedora-bootc:latest
+# Pinned to Fedora 44 by digest; keep in sync with os/Containerfile.
+FROM quay.io/fedora/fedora-bootc:44@sha256:a2789aaa615504ac9dd039a6ac0cc75343ceca89416e38441d739dbffe6557c9
 
 ARG PAYLOAD_REF=ghcr.io/OWNER/agentbox-os:latest
 RUN --mount=type=bind,source=os/iso,target=/src /src/build.sh "${PAYLOAD_REF}"
