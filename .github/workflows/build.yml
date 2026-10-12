@@ -20,6 +20,9 @@ jobs:
       # to :latest (and optionally flip package visibility) at release.
       AGENT_TAG: edge
       OS_TAG: edge
+      # Fedora 44's new EFI layout (/usr/lib/efi) trips the builder's grub2.iso
+      # stage; build the installer on fedora-43 until image-builder catches up.
+      DISTRO: fedora-43
     steps:
       - uses: actions/checkout@v4
 

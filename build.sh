@@ -55,6 +55,13 @@ case "${1:-}" in
       pull=(--bootc-pull-container)
     fi
 
+    # Installer (Anaconda) distro. Fedora 44 moved the EFI shim to the new
+    # /usr/lib/efi layout, which this image-builder's grub2.iso stage doesn't
+    # handle yet; fedora-43 uses the old layout. Set DISTRO=fedora-43 until the
+    # builder catches up (or leave empty to track the payload's distro).
+    distro=()
+    [ -n "${DISTRO:-}" ] && distro=(--distro "$DISTRO")
+
     # No-op chcon/restorecon shims: the image-builder container relabels its
     # store at startup, which fails on hosts without SELinux (Ubuntu).
     shim=$(mktemp -d); trap 'rm -rf "$shim"' EXIT
@@ -87,6 +94,7 @@ case "${1:-}" in
         --bootc-ref "$os_ref" \
         --bootc-installer-payload-ref "$os_ref" \
         "${pull[@]}" \
+        "${distro[@]}" \
         --bootc-default-fs "$ROOT_FS" \
         --blueprint /installer.toml
     echo "wrote $HERE/output/install.iso"
