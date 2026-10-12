@@ -29,10 +29,9 @@ os/                        the bootc OS image
     usr/bin/agentbox              the one CLI (setup/up/status/authorize/allow/...)
     usr/bin/agentbox-egress       derives the LAN allowlist from the MCP config
     usr/lib/tmpfiles.d/           creates the volume/config dirs with owners
-    usr/lib/systemd/system/       firewall / vault-init / provision units
+    usr/lib/systemd/system/       firewall / vault / provision / selinux units
     usr/share/containers/systemd/ quadlets (agentbox, agent-vault, tailscale, net)
-    usr/share/agentbox/           static egress policy + the MCP config
-    etc/tailscale/serve/          tailnet HTTPS routes (mounted into the container)
+    usr/share/agentbox/           egress policy, MCP config, tailscale serve config
 build.sh                   build + push both images; build the installer ISO
 ```
 

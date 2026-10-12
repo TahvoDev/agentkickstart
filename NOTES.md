@@ -125,11 +125,25 @@ os/         bootc OS image
     usr/lib/tmpfiles.d/    volume/config dirs
     usr/lib/bootc/install/ bootc install defaults (root fs)
     usr/share/containers/systemd/  quadlets
-    usr/share/agentbox/    static firewall policy + MCP config
-    etc/tailscale/serve/   tailnet HTTPS routes (mounted into the container)
+    usr/share/agentbox/    static firewall policy, MCP config, tailscale serve config
 build.sh    agent | os | installer
 ```
 
 Static image payload lives in `/usr` (immutable, versioned); `/etc` holds only
 runtime state (`/etc/agentbox/*.env`, generated `firewall.{mcp,allow}.nft`,
 `/etc/agent-vault/master.env`), created at boot by tmpfiles/the CLI.
+
+## SELinux
+
+The box runs SELinux enforcing. The one thing that needs care is the tailscale
+container opening `/dev/net/tun`: `container_t` has no tun access by default, so
+`agentbox-selinux.service` sets the `container_use_devices` boolean at boot.
+That relaxes device access for containers that explicitly add one (the device
+cgroup still gates it) instead of turning off label separation for the whole
+container. Tailscale's state dir is mounted `:Z` and its serve config is staged
+into that dir by `agentbox-tailscale-serve.service`, so nothing is mounted from
+`/etc` and no host file needs relabeling.
+
+The installer ISO boots its (hand-rolled, not lorax-built) Anaconda environment
+with `enforcing=0` (SELinux on, permissive). The installed box enforces SELinux
+from the OS image regardless of the installer cmdline.

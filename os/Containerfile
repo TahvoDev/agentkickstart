@@ -33,7 +33,8 @@ RUN sed -i "s|^Image=ghcr.io/OWNER/agentbox-agent:latest\$|Image=${AGENT_IMAGE}|
 
 RUN systemctl enable \
       agentbox-firewall.service agent-vault-init.service \
-      agentbox-provision.service podman-auto-update.timer sshd.service \
+      agentbox-provision.service agentbox-selinux.service \
+      agentbox-tailscale-serve.service podman-auto-update.timer sshd.service \
  && systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
 
 # bootc's static image checks; fails the build on problems.
