@@ -1,1 +1,54 @@
-placeholder
+name: build
+
+# Pushes both images to GHCR and publishes the installer ISO. Uses the
+# workflow's built-in GITHUB_TOKEN (packages: write) - no PAT, no secret.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  images:
+    runs-on: ubuntu-latest
+    env:
+      OWNER: ${{ github.repository_owner }}
+      # Pre-release tag: the box tracks :edge while testing. Promote a digest
+      # to :latest (and optionally flip package visibility) at release.
+      AGENT_TAG: edge
+      OS_TAG: edge
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: lowercase owner (registry refs must be lowercase)
+        run: echo "OWNER=${OWNER,,}" >> "$GITHUB_ENV"
+
+      - name: podman
+        run: command -v podman || { sudo apt-get update && sudo apt-get install -y podman; }
+
+      - name: free disk space (installer build is heavy)
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/share/swift /usr/local/.ghcup
+
+      # Both the user (agent/os push) and root (installer pulls the OS ref)
+      # stores need ghcr creds.
+      - name: ghcr login (user + root)
+        run: |
+          echo '${{ github.token }}' | podman login ghcr.io -u '${{ github.actor }}' --password-stdin
+          echo '${{ github.token }}' | sudo podman login ghcr.io -u '${{ github.actor }}' --password-stdin
+
+      - name: build + push agent and OS images
+        run: |
+          ./build.sh agent
+          ./build.sh os
+
+      - name: build installer ISO
+        run: ./build.sh installer
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: install-iso
+          path: output/install.iso
+          if-no-files-found: error
