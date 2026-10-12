@@ -46,6 +46,15 @@ OWNER=youruser ./build.sh os
 ./build.sh installer                     # -> ./output/install.iso
 ```
 
+### CI (pre-release)
+
+`.github/workflows/build.yml` builds both images on push to `main` (or manual
+dispatch), pushes them to your GHCR namespace, and uploads `install.iso` as an
+artifact. It authenticates with the workflow's built-in `GITHUB_TOKEN`
+(`packages: write`) — no PAT, no stored secret. While testing it publishes the
+moving tag `:edge` (the box's quadlets/upgrade track it); promote a digest to
+`:latest` and/or flip the packages public at release.
+
 Nothing machine-specific is baked into the ISO. Boot `output/install.iso`; the
 Anaconda UI asks for everything: pick the target disk, tick **encrypt my data**,
 and create the admin user (tick **Make this user administrator**). `%post` then
@@ -129,7 +138,14 @@ The host itself and mDNS `.local` names stay unreachable by design.
   should have a **spend limit**. The box brokers these, so a key's blast radius
   is whatever the key itself allows.
 - The registry namespace must exist and (for the box to pull) the agent image
-  must be pullable without interactive auth.
+  must be pullable without interactive auth. Public packages need nothing;
+  for **private** packages give `agentbox setup` your GHCR username and a
+  read-only (`Packages: read`) token — it stores them in the vault and
+  `provision` writes `/etc/containers/auth.json` + `/etc/ostree/auth.json` so
+  root podman and `bootc upgrade` can pull. Rotate later:
+  `sudo agentbox login && sudo agentbox av vault credential set
+  GHCR_USER=you GHCR_PULL_TOKEN=... --vault agentbox-boot &&
+  sudo systemctl restart agentbox-provision`.
 
 ## Known gaps
 
