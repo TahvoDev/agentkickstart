@@ -36,15 +36,27 @@ os/                        the bootc OS image
 build.sh                   build + push both images; build the installer ISO
 ```
 
-## Build and install
+## Install
 
-```sh
-# build and publish both images (the box pulls these at runtime)
-OWNER=youruser ./build.sh agent
-OWNER=youruser ./build.sh os
-# build the installer ISO (OWNER to pull the pushed OS image; or LOCAL=1)
-OWNER=youruser ./build.sh installer      # -> ./output/install.iso
-```
+CI publishes the ISO — no local build needed.
+
+1. Download the `install-iso` artifact from the newest **build** run
+   (Actions → build), or:
+
+   ```sh
+   gh run download -n install-iso -R OWNER/agentkickstart
+   ```
+
+2. Flash it to a USB stick:
+
+   ```sh
+   sudo dd if=install.iso of=/dev/sdX bs=4M status=progress oflag=sync
+   ```
+
+3. Boot the stick. Anaconda asks for the target disk, encryption, and the admin
+   user/password; `%post` binds the root to the TPM and writes the recovery key
+   to `/root/recovery-key.txt`. Reboot into the box and continue at
+   **First boot** below.
 
 ### CI (pre-release)
 
@@ -65,14 +77,20 @@ While testing it publishes the moving tag `:edge` (the box's quadlets/upgrade
 track it); promote a digest to `:latest` and/or flip the packages public at
 release.
 
-Nothing machine-specific is baked into the ISO. Boot `output/install.iso`; the
-Anaconda text installer asks for everything: pick the target disk, enable
-encryption, and set the admin user/password. `%post` then binds the encrypted
-root to the TPM, writes the recovery key to `/root/recovery-key.txt`, and you
-reboot into the box. Update the OS with `bootc upgrade`; the agent image
-auto-updates via `podman-auto-update.timer`.
+Once installed, update the OS with `bootc upgrade`; the agent image auto-updates
+via `podman-auto-update.timer`.
 
-### Requirements for the build host
+### Building locally (maintainers)
+
+CI does this on push to `main`; to build by hand:
+
+```sh
+OWNER=youruser ./build.sh agent          # build + push the agent image
+OWNER=youruser ./build.sh os             # build + push the OS image
+OWNER=youruser ./build.sh installer      # -> ./output/install.iso
+```
+
+Requirements:
 
 - **agent**/**os**/**installer** need only **podman**, plus **`sudo`** for
   `installer` (it builds and mounts into rootful podman storage). Any host
