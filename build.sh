@@ -72,11 +72,18 @@ case "${1:-}" in
       authmnt=(-v "$auth:/etc/containers/auth.json:ro" -e REGISTRY_AUTH_FILE=/etc/containers/auth.json)
     fi
 
+    # osbuild's grub2.iso stage reads the Fedora EFI shim from /boot/efi, so
+    # the build host must be Fedora and its EFI tree must be visible in the
+    # builder container (no-op on hosts without /boot/efi).
+    efimnt=()
+    [ -d /boot/efi ] && efimnt=(-v /boot/efi:/boot/efi:ro)
+
     # Rootful + --privileged is required (it mounts devtmpfs); mount the
     # rootful store so it finds a LOCAL=1 image by ref.
     mkdir -p "$HERE/output"
     "${SUDO[@]}" podman run --rm --privileged \
       "${authmnt[@]}" \
+      "${efimnt[@]}" \
       -v /var/lib/containers/storage:/var/lib/containers/storage \
       -v "$HERE/output:/output" \
       -v "$HERE/os/installer.toml:/installer.toml:ro" \

@@ -6,11 +6,11 @@
 #
 #   podman build -f os/Containerfile -t ghcr.io/OWNER/agentbox-os:latest .
 #
-# Pin to Fedora 43: Fedora 44 moved the EFI shim to /usr/lib/efi, which this
-# image-builder's grub2.iso stage (osbuild#2525) can't build yet, so the
-# installer ISO fails looking for /boot/efi/EFI/fedora/shimx64.efi. Bump once
-# the builder handles the fc44 layout.
-FROM quay.io/fedora/fedora-bootc:43
+# Pin the base to a Fedora release once you have a known-good one. The
+# installer ISO is built on a Fedora host (see build.sh installer): osbuild's
+# grub2.iso stage reads the Fedora EFI shim, so it can't build off a non-Fedora
+# host.
+FROM quay.io/fedora/fedora-bootc:latest
 
 # No package installs: the base already ships podman, nftables, jq, curl and
 # openssh-server (verified on fc44). Re-add a dnf step only if a future base

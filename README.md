@@ -48,12 +48,30 @@ OWNER=youruser ./build.sh os
 
 ### CI (pre-release)
 
-`.github/workflows/build.yml` builds both images on push to `main` (or manual
-dispatch), pushes them to your GHCR namespace, and uploads `install.iso` as an
-artifact. It authenticates with the workflow's built-in `GITHUB_TOKEN`
-(`packages: write`) — no PAT, no stored secret. While testing it publishes the
-moving tag `:edge` (the box's quadlets/upgrade track it); promote a digest to
-`:latest` and/or flip the packages public at release.
+`.github/workflows/build.yml` has two jobs on push to `main` (or manual
+dispatch):
+
+- **images** (hosted `ubuntu-latest`) builds and pushes both images to your
+  GHCR namespace. It authenticates with the workflow's built-in `GITHUB_TOKEN`
+  (`packages: write`) — no PAT, no stored secret.
+- **installer** builds `install.iso` and uploads it as an artifact. It needs a
+  **Fedora** host: osbuild's `grub2.iso` stage reads the Fedora EFI shim from
+  `/boot/efi`, which a container on a non-Fedora runner doesn't have. So it
+  runs on a self-hosted runner labelled `fedora` (podman + passwordless sudo):
+
+  ```sh
+  # on a Fedora box: https://github.com/TahvoDev/agentkickstart/settings/actions/runners/new
+  ./config.sh --url https://github.com/TahvoDev/agentkickstart --token <TOKEN> --labels fedora
+  sudo ./svc.sh install && sudo ./svc.sh start
+  ```
+
+  Or build it by hand on any Fedora host (needs podman + sudo): `sudo dnf
+  install podman`, log in to GHCR, then `OWNER=tahvodev REGISTRY_AUTH_FILE=…
+  ./build.sh installer`.
+
+While testing it publishes the moving tag `:edge` (the box's quadlets/upgrade
+track it); promote a digest to `:latest` and/or flip the packages public at
+release.
 
 Nothing machine-specific is baked into the ISO. Boot `output/install.iso`; the
 Anaconda UI asks for everything: pick the target disk, tick **encrypt my data**,
