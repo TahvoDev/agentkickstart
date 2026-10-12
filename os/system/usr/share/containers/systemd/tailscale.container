@@ -1,7 +1,7 @@
 [Unit]
 Description=Tailscale
-Requires=agentbox-provision.service
-After=agentbox-provision.service network-online.target
+Requires=agentbox-provision.service agentbox-selinux.service agentbox-tailscale-serve.service
+After=agentbox-provision.service agentbox-selinux.service agentbox-tailscale-serve.service network-online.target
 Wants=network-online.target
 
 [Container]
@@ -12,15 +12,16 @@ Network=host
 AddDevice=/dev/net/tun
 AddCapability=NET_ADMIN
 AddCapability=NET_RAW
-# Needed for /dev/net/tun under SELinux; tighten later
-SecurityLabelDisable=true
-Volume=/var/lib/tailscale:/var/lib/tailscale
-# Mount only the serve dir so tailscale.env is not visible inside
-Volume=/etc/tailscale/serve:/config
+# No SecurityLabelDisable: agentbox-selinux.service turns on the
+# container_use_devices boolean so a container that explicitly adds a device
+# can open it, while SELinux stays enforcing.
+# State dir is private-labeled; the serve config is staged into it by
+# agentbox-tailscale-serve.service (so tailscale.env stays out of the mount).
+Volume=/var/lib/tailscale:/var/lib/tailscale:Z
 Environment=TS_HOSTNAME=agentbox
 Environment=TS_STATE_DIR=/var/lib/tailscale
 Environment=TS_USERSPACE=false
-Environment=TS_SERVE_CONFIG=/config/serve.json
+Environment=TS_SERVE_CONFIG=/var/lib/tailscale/serve.json
 Environment=TS_EXTRA_ARGS=--advertise-tags=tag:agentbox
 EnvironmentFile=/etc/agentbox/tailscale.env
 

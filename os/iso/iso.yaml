@@ -2,5 +2,8 @@ label: "agentbox-install"
 grub2:
   entries:
     - name: "Install agentbox"
-      linux: "/images/pxeboot/vmlinuz inst.stage2=hd:LABEL=agentbox-install console=tty0 inst.text selinux=0"
+      # The installer env boots SELinux permissive (not disabled): the hand-rolled
+      # Anaconda container isn't labeled like a lorax-built one. The installed
+      # box enforces SELinux from the OS image regardless of this cmdline.
+      linux: "/images/pxeboot/vmlinuz inst.stage2=hd:LABEL=agentbox-install console=tty0 inst.text enforcing=0"
       initrd: "/images/pxeboot/initrd.img"
