@@ -44,7 +44,18 @@ printf '[Login]\nReserveVT=2\n' > /usr/lib/systemd/logind.conf.d/anaconda-shell.
 
 # Anaconda defaults: install the (embedded) payload, and when the root is
 # encrypted bind it to the TPM and print a recovery key.
+#
+# The leading 'text' is load-bearing. Anaconda loads this file as the kickstart
+# when no inst.ks is given, and a 'text' *from kickstart* sets
+# DisplayModeTextKickstarted, which suppresses the interactive RDP question in
+# AskRDSpoke. Without it, upstream commit b97165de6f (shipped F43/F44) makes
+# apply() unconditionally write a None field to the DBus RDP property, and the
+# dasbus write fails with "AnacondaError: Invalid DBus value 'None'" ("Pane is
+# dead"). The inst.text on the kernel cmdline boots text mode but does NOT set
+# that flag, so it does not avoid the crash on its own. Remove this line once
+# https://github.com/rhinstaller/anaconda/pull/6512 is fixed upstream.
 cat > /usr/share/anaconda/interactive-defaults.ks <<EOF
+text
 bootc --source-imgref containers-storage:${payload_ref} --target-imgref ${payload_ref}
 
 %post --interpreter=/bin/bash --erroronfail
