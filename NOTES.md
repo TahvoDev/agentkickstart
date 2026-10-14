@@ -25,27 +25,75 @@ mental model and the gotchas.
 ## Three horizons
 
 ### 1) Now, on the build host (one-time)
-- Nothing to install: **podman + sudo** are all that's needed; the ISO is
-  generic and the installer asks for everything.
+- Nothing to install: **podman + sudo** are all that's needed.
 - Optional: decide the **registry namespace** for real deploys (see §3).
 
-### 2) Quick test (smallest end-to-end proof, no registry)
+### 2) Phase B: build an ISO and test it in a VM (no registry)
+
+The image is **generic**: it bakes no user/key/password. First boot runs the
+console wizard (admin + SSH key), then a browser *claim* creates the vault owner
+and prints the passwords + recovery key. This VM test proves that whole path.
+
 ```sh
 LOCAL=1 ./build.sh installer     # prompts for sudo; -> output/install.iso
 ```
-- Builds the OS image + installer ISO **offline**. `sudo` is required (rootful
-  podman).
-- Proves: OS image builds, ISO builds, Anaconda boots, disk pick + encryption,
-  `%post` TPM + recovery, first boot reaches `agentbox setup`.
-- Won't show a working **desktop**: the installed box pulls the agent image from
-  the registry and `bootc upgrade` points at `localhost` — both fail by design.
-- To boot it you need qemu/virt-manager (+ `swtpm` for the TPM); without
-  `/dev/kvm` it's slow — or install to a spare disk.
+- Builds the OS image + installer ISO **offline**; `sudo` required (rootful
+  podman, the builder mounts devtmpfs).
+- Won't give a working **desktop**: the installed box pulls the agent/gate
+  images from the registry and `bootc upgrade` points at `localhost` (both fail
+  by design with `LOCAL=1`). Everything up to the claim still exercises.
+
+#### Boot it with a TPM (qemu + swtpm)
+
+`%post` is `--erroronfail`, so the install **needs a TPM** — use `swtpm`. No
+`/dev/kvm` is fine, just slow.
+
+```sh
+# --- host prep (once) ---
+qemu-img create -f qcow2 /tmp/ab/disk.qcow2 25G
+cp /usr/share/OVMF/OVMF_VARS.fd /tmp/ab/vars.fd          # path varies: edk2/ovmf/OVMF_VARS.fd
+mkdir -p /tmp/ab/tpm
+swtpm socket --tpm2 --tpmstate dir=/tmp/ab/tpm \
+  --ctrl type=unixio,path=/tmp/ab/tpm/swtpm.sock --daemon
+
+# --- boot the installer (UEFI + TPM over the swtpm socket) ---
+qemu-system-x86_64 -machine q35,accel=kvm -cpu host -m 4G -smp 4 \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd \
+  -drive if=pflash,format=raw,file=/tmp/ab/vars.fd \
+  -chardev socket,id=chrtpm,path=/tmp/ab/tpm/swtpm.sock \
+  -tpmdev emulator,id=tpm0,chardev=chrtpm -device tpm-crb,tpmdev=tpm0 \
+  -drive file=/tmp/ab/disk.qcow2,if=virtio,format=qcow2 \
+  -cdrom output/install.iso -boot d -nographic
+```
+
+What to check, in order:
+1. **Picker** (`agentbox-pick.service`): console lists the virtio disk, asks you
+   to type `ERASE`; then Anaconda erases + installs with no further prompts.
+2. **`%post`**: the install ends by printing a recovery key; the box reboots.
+3. **TPM bind**: on the reboot the LUKS root unlocks with no passphrase (same
+   swtpm state). Confirm on the box: `sudo cryptsetup luksDump <dev>` shows a
+   `systemd-tpm2` token.
+4. **First-boot wizard** (`agentbox-firstboot.service`): create the admin user +
+   paste an SSH key. Check `ssh <user>@<ip>` works and password SSH is off.
+5. **Claim**: from another host, `curl -sk https://<box-ip>/` (or a browser;
+   accept the self-signed cert after comparing the fingerprint printed on the
+   console) and submit the one-time code + owner email/password.
+6. **Result**: the page shows the vault URL, desktop + Paseo passwords, and the
+   recovery key. Then `ssh <user>@<ip> sudo agentbox status`.
+
+Caveats / expected failures in this offline test: the agent/gate UI will not
+come up (images not pullable), and `sudo agentbox up` will fail at
+`podman pull`. That's the registry gap, not a bug — it is covered by a real
+`OWNER=<ns> ./build.sh` deploy (§3).
+
+Reboot to re-verify TPM unlock: stop qemu and restart it with the **same**
+`/tmp/ab/tpm` state and **without** `-cdrom`/`-boot d`.
 
 ### 3) Long term (real deployment)
 1. **Registry** with the images:
    ```sh
    OWNER=<namespace> ./build.sh agent     # push agent image
+   OWNER=<namespace> ./build.sh gate      # push gate image
    OWNER=<namespace> ./build.sh os        # push OS image
    OWNER=<namespace> ./build.sh installer # pulls OS ref; bakes it as update source
    ```
@@ -54,9 +102,9 @@ LOCAL=1 ./build.sh installer     # prompts for sudo; -> output/install.iso
    organization package`) — so push from **CI**, whose built-in `GITHUB_TOKEN`
    has it (no PAT). See `.github/workflows/build.yml`; it tags `:edge` while
    testing.
-2. **CI**: `.github/workflows/build.yml` builds+pushes both images on `main`,
-   uploads `install.iso` as an artifact, and keyless-signs both images with
-   cosign (then self-verifies the signatures).
+2. **CI**: `.github/workflows/build.yml` builds+pushes the agent, gate and OS
+   images on `main`, uploads `install.iso` as an artifact, and keyless-signs all
+   three with cosign (then self-verifies the signatures).
 3. **Runtime updates**: `bootc upgrade` (OS) + `podman-auto-update.timer` (agent).
 4. **Private packages** → `agentbox setup` takes a GHCR username + read-only
    token, stores them in the vault; `provision` writes `/etc/containers/auth.json`
