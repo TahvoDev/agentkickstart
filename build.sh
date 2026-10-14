@@ -2,6 +2,7 @@
 # build.sh - build the agent image, the OS image, and the installer ISO.
 #
 #   OWNER=<registry-namespace> ./build.sh agent      # build + push the agent image
+#   OWNER=<registry-namespace> ./build.sh gate       # build + push the gate image
 #   OWNER=<registry-namespace> ./build.sh os         # build + push the OS image
 #   ./build.sh installer                             # build ./output/install.iso
 #
@@ -13,6 +14,7 @@ set -euo pipefail
 
 REGISTRY=${REGISTRY:-ghcr.io}
 AGENT_TAG=${AGENT_TAG:-latest}
+GATE_TAG=${GATE_TAG:-edge}
 OS_TAG=${OS_TAG:-latest}
 BUILDER_IMAGE=${BUILDER_IMAGE:-ghcr.io/osbuild/image-builder-cli:latest@sha256:aba150149bcc26ac3ae56e93628b8383767f0caf4c49dcc98fa2d2045c8b9487}
 LOCAL_OS=${LOCAL_OS:-localhost/agentbox-os:latest}
@@ -27,7 +29,7 @@ read -ra BUILD_OPTS <<<"${PODMAN_BUILD_OPTS:-}"
 IB_ARGS=()
 [ "${IB_METRICS:-0}" = 1 ] && IB_ARGS+=(--with-metrics)
 
-usage() { echo "usage: OWNER=<ns> $0 agent|os|installer" >&2; exit 2; }
+usage() { echo "usage: OWNER=<ns> $0 agent|gate|os|installer" >&2; exit 2; }
 
 case "${1:-}" in
   agent)
@@ -37,11 +39,19 @@ case "${1:-}" in
     podman push "$img"
     ;;
 
+  gate)
+    : "${OWNER:?set OWNER to your registry namespace, e.g. OWNER=youruser}"
+    img="$REGISTRY/$OWNER/agentbox-gate:$GATE_TAG"
+    podman build "${BUILD_OPTS[@]}" -f "$HERE/gate/Containerfile" -t "$img" "$HERE/gate"
+    podman push "$img"
+    ;;
+
   os)
     : "${OWNER:?set OWNER to your registry namespace, e.g. OWNER=youruser}"
     img="$REGISTRY/$OWNER/agentbox-os:$OS_TAG"
     podman build "${BUILD_OPTS[@]}" -f "$HERE/os/Containerfile" -t "$img" \
-      --build-arg AGENT_IMAGE="$REGISTRY/$OWNER/agentbox-agent:$AGENT_TAG" "$HERE"
+      --build-arg AGENT_IMAGE="$REGISTRY/$OWNER/agentbox-agent:$AGENT_TAG" \
+      --build-arg GATE_IMAGE="$REGISTRY/$OWNER/agentbox-gate:$GATE_TAG" "$HERE"
     podman push "$img"
     ;;
 
@@ -51,7 +61,9 @@ case "${1:-}" in
     # The payload is embedded in the ISO's storage and installed by Anaconda.
     if [ "${LOCAL:-0}" = 1 ]; then
       payload_ref="$LOCAL_OS"
-      "${SUDO[@]}" podman build "${BUILD_OPTS[@]}" -f "$HERE/os/Containerfile" -t "$payload_ref" "$HERE"
+      "${SUDO[@]}" podman build "${BUILD_OPTS[@]}" -f "$HERE/os/Containerfile" -t "$payload_ref" \
+        --build-arg AGENT_IMAGE="localhost/agentbox-agent:latest" \
+        --build-arg GATE_IMAGE="localhost/agentbox-gate:latest" "$HERE"
     else
       : "${OWNER:?set OWNER (or LOCAL=1 for an offline test build)}"
       payload_ref="$REGISTRY/$OWNER/agentbox-os:$OS_TAG"

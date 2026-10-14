@@ -3,3 +3,4 @@ output/
 *.ign
 perf.log
 perf-build.log
+gate/agentbox-gate

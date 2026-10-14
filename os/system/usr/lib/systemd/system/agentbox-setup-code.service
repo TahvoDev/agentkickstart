@@ -1,0 +1,18 @@
+[Unit]
+Description=agentbox: publish a fresh one-time claim code
+# Runs on every boot while the box is unclaimed, so the URL/code/cert shown on
+# the console and in /etc/issue.d are always current (reboot- and tty-safe).
+After=agentbox-gate.service
+Wants=agentbox-gate.service
+ConditionPathExists=!/var/lib/agentbox/claimed
+Before=agentbox-claim-console.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# The gate writes its certificate fingerprint as it starts; give it a moment.
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 20); do [ -s /run/agentbox/gate-fingerprint ] && exit 0; sleep 0.5; done'
+ExecStart=/usr/bin/agentbox setup-code
+
+[Install]
+WantedBy=multi-user.target

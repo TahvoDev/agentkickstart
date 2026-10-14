@@ -1,0 +1,39 @@
+[Unit]
+Description=agentbox gate (TLS claim UI + Agent Vault proxy)
+# The gate fronts the vault: it serves the claim UI until the box is claimed,
+# then reverse-proxies the vault UI/API on the same HTTPS origin.
+Requires=agent-vault.service
+After=agent-vault.service systemd-tmpfiles-setup.service network-online.target
+Wants=network-online.target
+
+[Container]
+ContainerName=agentbox-gate
+Image=ghcr.io/__OWNER__/__GATE_IMAGE__:edge
+AutoUpdate=registry
+# Host network so it can reach the host-published vault on 127.0.0.1:14331 and
+# bind :443 on the LAN addresses without a podman port-forward.
+Network=host
+# Shared state: /run/agentbox (rw: fingerprints, the claim, finalize status) and
+# the persistent markers under /var/lib/agentbox (ro).
+Volume=/run/agentbox:/run/agentbox
+Volume=/var/lib/agentbox:/var/lib/agentbox:ro
+Environment=AGENTBOX_VAULT_URL=http://127.0.0.1:14331
+User=10003
+Group=10003
+# Hardening: no shell (scratch image), read-only rootfs, no capabilities except
+# the ability to bind :443, and SELinux labeling off so it can share the host
+# tmpfs with the (root) finalize service.
+ReadOnly=true
+DropCapability=ALL
+AddCapability=NET_BIND_SERVICE
+NoNewPrivileges=true
+SecurityLabelDisable=true
+Memory=128m
+PidsLimit=64
+
+[Service]
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

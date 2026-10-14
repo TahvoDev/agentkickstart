@@ -1,0 +1,18 @@
+[Unit]
+Description=Finalize agentbox after a browser claim
+# Triggered by agentbox-finalize.path. Re-runnable: each step is checkpointed,
+# so a retry after a failure resumes where it left off.
+Requires=agent-vault.service
+After=agent-vault.service
+# The .path unit fires the instant the gate writes claim.json; this condition
+# also makes the unit a no-op if it is ever (re)started with no claim present.
+ConditionPathExists=/run/agentbox/claim.json
+
+[Service]
+Type=oneshot
+UMask=0077
+TimeoutStartSec=600
+ExecStart=/usr/bin/agentbox finalize
+
+[Install]
+WantedBy=multi-user.target

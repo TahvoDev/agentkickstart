@@ -8,7 +8,7 @@ COPY --from=docker.io/infisical/agent-vault:0.40.0@sha256:4d490e2586c553ea121fa4
 # wmctrl/xdotool/x11-utils/at-spi2-core feed the computer-use MCP.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      git ripgrep curl ca-certificates gh openssl procps \
+      git ripgrep curl ca-certificates gh openssl procps jq \
       xvfb x11vnc novnc websockify nginx dbus dbus-x11 \
       xfce4 xfce4-terminal fonts-dejavu-core chromium \
       wmctrl x11-utils xdotool at-spi2-core \

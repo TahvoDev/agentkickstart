@@ -1,0 +1,18 @@
+[Unit]
+Description=agentbox: show the claim banner on the console
+# Display-only: prints the current claim URL/code/cert to the console and exits
+# (no blocking start job, so nothing waits on a hung console).
+After=agentbox-setup-code.service
+Wants=agentbox-setup-code.service
+ConditionPathExists=!/var/lib/agentbox/claimed
+Conflicts=getty@tty1.service
+
+[Service]
+Type=oneshot
+TTYPath=/dev/console
+StandardOutput=tty
+StandardError=tty
+ExecStart=/usr/bin/cat /etc/issue.d/99-agentbox.conf
+
+[Install]
+WantedBy=multi-user.target

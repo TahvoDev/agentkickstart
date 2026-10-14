@@ -7,11 +7,12 @@ mental model and the gotchas.
 
 - **Build host** = the machine you build on (any host with podman + sudo).
 - **Agent box** = the separate target PC you install onto.
-- Three artifacts, produced on the build host:
+- Four artifacts, produced on the build host:
 
   | Artifact | Source | Lives / goes |
   | --- | --- | --- |
   | **agent image** (`ghcr.io/OWNER/agentbox-agent`) | `agent/` | a **registry**; the box pulls it at runtime |
+  | **gate image** (`ghcr.io/OWNER/agentbox-gate`) | `gate/` | a **registry**; the box pulls it at runtime |
   | **OS image** (`ghcr.io/OWNER/agentbox-os`) | `os/` | a **registry**; the box's `bootc upgrade` pulls it |
   | **installer ISO** (`output/install.iso`) | `os/iso/` | flashed/booted to lay down the OS |
 
@@ -91,6 +92,12 @@ LOCAL=1 ./build.sh installer     # prompts for sudo; -> output/install.iso
   it (`containers-storage:<ref>`) and `--target-imgref` sets the box's
   `bootc upgrade` source (`LOCAL=1` leaves it pointing at `localhost`).
 - `image-builder` names the ISO itself; `build.sh` renames it to `install.iso`.
+- **Erase-and-go disk pick** is a systemd unit (`agentbox-pick.service`,
+  `Before=anaconda.service`) that prompts on the console, then rewrites
+  `/usr/share/anaconda/interactive-defaults.ks` with the chosen disk. Kickstart
+  `%pre` + `%include` can't do this: `%include` is expanded at parse time, before
+  `%pre` runs. `autopart --encrypted --passphrase=<random>` keeps Anaconda
+  non-interactive; `%post` enrolls the TPM (PCR 7) and writes the recovery key.
 
 ## SSH keys: no install-time prompt (by design)
 Nothing prompts for an SSH key at install, and that's intentional:
@@ -112,25 +119,30 @@ allows password login, so the very first login uses the installer password.
 ## Repo layout
 ```
 agent/      agent desktop image (Containerfile, opencode.json, nginx.conf, start-agent.sh)
+gate/       gate image (TLS claim UI + vault reverse proxy; --qr for the console)
 os/         bootc OS image
   Containerfile            COPY payload + enable units
   iso/                     bootc-generic-iso installer container
     Containerfile
-    build.sh               Anaconda + EFI tree + kickstart (TPM + recovery)
+    build.sh               Anaconda + EFI tree + disk picker + kickstart (TPM + recovery)
     iso.yaml               ISO menu / kernel options
   system/                  host payload, one file per source of truth
-    usr/bin/               agentbox CLI + agentbox-egress
+    usr/bin/               agentbox CLI
+    usr/libexec/agentbox/  agentbox-egress (internal helper)
     usr/lib/systemd/       units + logind drop-in
     usr/lib/tmpfiles.d/    volume/config dirs
     usr/lib/bootc/install/ bootc install defaults (root fs)
     usr/share/containers/systemd/  quadlets
     usr/share/agentbox/    static firewall policy, MCP config, tailscale serve config
-build.sh    agent | os | installer
+build.sh    agent | gate | os | installer
+deploy.sh   os (build+push :dev, bootc switch) | agent | gate
 ```
 
-Static image payload lives in `/usr` (immutable, versioned); `/etc` holds only
-runtime state (`/etc/agentbox/*.env`, generated `firewall.{mcp,allow}.nft`,
-`/etc/agent-vault/master.env`), created at boot by tmpfiles/the CLI.
+Static image payload lives in `/usr` (immutable, versioned). `/etc` holds only
+the durable bootstrap token (`/etc/agentbox/bootstrap.env`). Secrets
+(`paseo/proxy/tailscale.env`) are re-fetched into `/run/agentbox/secrets`
+(tmpfs) on every boot; live claim state and generated
+`firewall.mcp.nft`/`master.env` are runtime-only.
 
 ## SELinux
 

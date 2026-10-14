@@ -1,0 +1,26 @@
+[Unit]
+Description=agentbox first-boot host setup (interactive, on the console)
+# Runs only until the host phase is done (setup writes the identity marker, so
+# an interrupted wizard re-runs on the next boot). The vault owner + passphrases
+# are created later, by the browser claim (or `agentbox setup --console`).
+ConditionPathExists=!/var/lib/agentbox/identity
+After=network-online.target
+Wants=network-online.target
+Before=agentbox-setup-code.service agentbox-provision.service agentbox.service tailscale.service
+# Own the console for the wizard.
+Conflicts=getty@tty1.service serial-getty@ttyS0.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Prompt on whatever the kernel console is: tty1 on bare metal, ttyS0 for a
+# `-nographic` VM. Wait for the user; this is intentionally interactive.
+TTYPath=/dev/console
+StandardInput=tty-force
+StandardOutput=tty
+StandardError=tty
+ExecStart=/usr/bin/agentbox setup
+TimeoutStartSec=infinity
+
+[Install]
+WantedBy=multi-user.target

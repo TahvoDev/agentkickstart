@@ -1,0 +1,11 @@
+[Unit]
+Description=Watch for a browser claim (agentbox)
+Documentation=man:systemd.path(5)
+
+[Path]
+# The gate creates /run/agentbox/claim.json when a browser submits the claim
+# form. finalize moves it away, so a retry re-triggers this path.
+PathExists=/run/agentbox/claim.json
+
+[Install]
+WantedBy=paths.target

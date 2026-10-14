@@ -31,6 +31,7 @@ jobs:
       # Pre-release tag: the box tracks :edge while testing. Promote a digest
       # to :latest (and optionally flip package visibility) at release.
       AGENT_TAG: edge
+      GATE_TAG: edge
       OS_TAG: edge
     steps:
       # Full history so the change-detection step can diff against the pushed
@@ -75,9 +76,10 @@ jobs:
           printf '%s' "$CR_TOKEN" | podman login --authfile "$AUTH" ghcr.io -u '${{ github.actor }}' --password-stdin
           echo "REGISTRY_AUTH_FILE=$AUTH" >> "$GITHUB_ENV"
 
-      - name: build + push agent and OS images
+      - name: build + push agent, gate and OS images
         run: |
           ./build.sh agent
+          ./build.sh gate
           ./build.sh os
 
       - name: install cosign
@@ -95,11 +97,12 @@ jobs:
             cosign sign --yes "$1@$(cat "$RUNNER_TEMP/digest")"
           }
           sign "ghcr.io/$OWNER/agentbox-agent:$AGENT_TAG"
+          sign "ghcr.io/$OWNER/agentbox-gate:$GATE_TAG"
           sign "ghcr.io/$OWNER/agentbox-os:$OS_TAG"
 
       - name: verify signatures (self-check)
         run: |
-          for image in "ghcr.io/$OWNER/agentbox-agent:$AGENT_TAG" "ghcr.io/$OWNER/agentbox-os:$OS_TAG"; do
+          for image in "ghcr.io/$OWNER/agentbox-agent:$AGENT_TAG" "ghcr.io/$OWNER/agentbox-gate:$GATE_TAG" "ghcr.io/$OWNER/agentbox-os:$OS_TAG"; do
             cosign verify "$image" \
               --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/build.yml@.*$" \
               --certificate-oidc-issuer https://token.actions.githubusercontent.com
@@ -114,6 +117,7 @@ jobs:
     env:
       OWNER: ${{ github.repository_owner }}
       AGENT_TAG: edge
+      GATE_TAG: edge
       OS_TAG: edge
     steps:
       - uses: actions/checkout@v4

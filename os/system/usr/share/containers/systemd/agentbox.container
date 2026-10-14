@@ -33,9 +33,10 @@ Environment=PASEO_VOICE_MODE_ENABLED=false
 # Placeholders only; Agent Vault swaps in real values at the proxy
 Environment=ANTHROPIC_API_KEY=__anthropic_api_key__
 Environment=GITHUB_TOKEN=__github_token__
-# PASEO_PASSWORD + PASSWORD (desktop), and AGENT_VAULT_ADDR/VAULT/TOKEN (proxy role)
-EnvironmentFile=/etc/agentbox/paseo.env
-EnvironmentFile=/etc/agentbox/proxy.env
+# PASEO_PASSWORD + PASSWORD (desktop), and AGENT_VAULT_ADDR/VAULT/TOKEN (proxy
+# role). Re-fetched into tmpfs by agentbox-provision.service on every boot.
+EnvironmentFile=/run/agentbox/secrets/paseo.env
+EnvironmentFile=/run/agentbox/secrets/proxy.env
 # Localhost only: Tailscale fronts it
 PublishPort=127.0.0.1:6767:6767
 PublishPort=127.0.0.1:8080:8080

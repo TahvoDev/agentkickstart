@@ -1,31 +1,116 @@
 #!/bin/bash
 # agentbox - one command for the whole box.
-#   setup    first run: SSH key (+ optional key-only), vault, credentials, then up
-#   up       sync secrets, restart Tailscale + agent desktop, show status
-#   status | logs | shell
-#   login | logout     owner session for admin work
-#   authorize [add]    install an SSH key for the sudo user; offer key-only
-#   allow <ip|cidr>... extra LAN/tailnet hosts (MCP config is auto-used)
-#   av <args>          agent-vault CLI inside the vault container
+#   setup        first run: admin/SSH, start vault + gate, print the claim URL/code
+#   setup --console   ...and create the vault owner on the console instead of a browser
+#   finalize     run the (re-runnable, checkpointed) claim steps
+#   setup-code   issue a fresh one-time claim code + rewrite /etc/issue.d
+#   claim-banner print the claim URL/code/cert QR on the console
+#   up           sync secrets, (re)start the agent desktop, show status
+#   status       vault / gate / desktop / Paseo / egress health
+#   passphrase   print the desktop + Paseo passwords
+#   logs         follow the agent + vault + gate journals
+#   authorize [add]   install an SSH key for the sudo user
+#
+# Credentials and service rules live in the box's Agent Vault and are managed
+# in its web UI. The vault is the single source of truth.
+#
+# The box is set up in two phases: a small host phase on the console (admin +
+# SSH key), then a browser claim that finalizes the vault owner and passphrases.
+# Everything is reboot-safe and re-runnable.
 set -uo pipefail
 [ "$EUID" -eq 0 ] || exec sudo "$0" "$@"
 
 CONF=/etc/agentbox
-URL=http://127.0.0.1:14321   # vault API as seen from inside its container
-BOOT_VAULT=agentbox-boot     # box secrets, read at boot by a member-role token
-PROXY_VAULT=agentbox         # brokered creds; the agent only gets a proxy-role token
+RUN=/run/agentbox
+# Runtime secrets (desktop/vault/tailscale credentials) live on tmpfs and are
+# re-fetched from the vault on every boot; only the bootstrap token that
+# authorises that fetch is durable, under $CONF.
+SECRETS=$RUN/secrets
+LIB=/var/lib/agentbox
+URL=http://127.0.0.1:14321             # vault API from inside its container
+HOST_VAULT_URL=http://127.0.0.1:14331  # vault API as published on host loopback
+BOOT_VAULT=agentbox-boot               # box secrets, read at boot by a member-role token
+PROXY_VAULT=agentbox                   # brokered creds; the agent only gets a proxy-role token
+GATE_IMAGE=ghcr.io/__OWNER__/__GATE_IMAGE__:edge
+GATE_UID=10003
+
+IDENTITY=$LIB/identity
+CLAIMED=$LIB/claimed
+# On tmpfs: progress within a single claim attempt, not a durable marker (a
+# reboot mid-finalize should start clean, not resume a stale run).
+CHECKPOINT=$RUN/finalize-checkpoint
+STATE=$RUN/finalize-state.env
+CLAIM=$RUN/claim.json
+CLAIM_ACTIVE=$RUN/claim.active
+CODE=$RUN/setup-code
+ISSUE=/etc/issue.d/99-agentbox.conf
+
 die() { echo "agentbox: $*" >&2; exit 1; }
 rand() { head -c 24 /dev/urandom | base64 | tr -d '/+='; }
-have_files() { local f; for f in tailscale paseo proxy; do [ -s $CONF/$f.env ] || return 1; done; }
+rand_code() { LC_ALL=C tr -dc '23456789ABCDEFGHJKLMNPQRSTVWXYZ' < /dev/urandom | head -c 8 || true; }
+have_files() { local f; for f in paseo proxy; do [ -s $SECRETS/$f.env ] || return 1; done; }
+claimed() { [ -e "$CLAIMED" ]; }
+identity() { [ -s "$IDENTITY" ]; }
+lan_ip() {
+  local ip
+  ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
+  [ -n "$ip" ] || ip=$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)
+  printf '%s' "$ip"
+}
+gate_url() { printf 'https://%s/' "$(lan_ip)"; }
+fingerprint() { head -n1 "$RUN/gate-fingerprint" 2>/dev/null; }
+done_step() { grep -qxF "$1" "$CHECKPOINT" 2>/dev/null; }
+mark_step() { printf '%s\n' "$1" >> "$CHECKPOINT"; }
+load_state() { [ -s "$STATE" ] && . "$STATE"; return 0; }
+state_add() { mkdir -p "$RUN"; ( umask 077; printf '%s=%q\n' "$1" "$2" >> "$STATE" ); }
+
+fail_finalize() {
+  mkdir -p "$RUN"
+  printf '%s\n' "$1" > "$RUN/finalize-error"
+  echo "agentbox: finalize failed: $1" >&2
+  exit 1
+}
+
+step() {
+  local name=$1 fn=$2
+  if done_step "$name"; then echo "agentbox: step $name: already done"; return 0; fi
+  echo "agentbox: step $name"
+  "$fn" || fail_finalize "step '$name' failed"
+  mark_step "$name"
+}
+
+howto_access() {  # howto_access <owner-email> <ts-key-or-empty>
+  local email=${1:-} ts=${2:-} ip; ip=$(lan_ip)
+  cat <<EOF
+
+---- WHERE TO GO ----
+Vault UI : https://${ip:-<box-ip>}/    owner: $email
+  (self-signed cert; add credentials and service rules HERE)
+  The agent reads them on its next start; no CLI needed.
+
+Desktop  : http://${ip:-<box-ip>}:8080     login user "agent" + a password from 'agentbox passphrase'
+Paseo    : http://${ip:-<box-ip>}:6767
+EOF
+  if [ -n "$ts" ]; then
+    echo "Also on your tailnet at https://<tailscale-host>.<tailnet>.ts.net"
+  else
+    echo "LAN-only (no Tailscale key given). To add Tailscale later, store TS_AUTHKEY"
+    echo "in the vault UI (vault '$BOOT_VAULT') and reboot, or re-run sudo agentbox setup --console."
+  fi
+  echo
+}
 
 av() {  # agent-vault CLI, run inside the vault container
-  local t=-i; [ -t 0 ] && t=-it
+  local t=
+  if [ -t 0 ] && [ -t 1 ]; then t=-it
+  elif [ "$1" = auth ] && { [ "$2" = register ] || [ "$2" = login ]; }; then t=-i
+  fi
   podman exec $t -e AGENT_VAULT_ADDR="$URL" agent-vault agent-vault "$@"
 }
 
 fetch() {  # fetch <credential>; retries while the vault comes up
   local v i
-  for i in $(seq "$TRIES"); do
+  for i in $(seq "${TRIES:-30}"); do
     if v=$(podman exec -e AGENT_VAULT_ADDR="$URL" -e AGENT_VAULT_TOKEN \
              agent-vault agent-vault vault credential get "$1" \
              --vault "$BOOT_VAULT" 2>/dev/null) && [ -n "$v" ]; then
@@ -36,20 +121,78 @@ fetch() {  # fetch <credential>; retries while the vault comes up
   return 1
 }
 
-fetch1() {  # fetch <credential> once, empty if absent (optional creds)
+fetch1() {  # single-shot fetch, for optional credentials (e.g. TS_AUTHKEY)
   podman exec -e AGENT_VAULT_ADDR="$URL" -e AGENT_VAULT_TOKEN \
-    agent-vault agent-vault vault credential get "$1" --vault "$BOOT_VAULT" 2>/dev/null || true
+    agent-vault agent-vault vault credential get "$1" --vault "$BOOT_VAULT" 2>/dev/null
 }
 
-registry_auth() {  # <user> <token> - pull creds for root podman (agent) + bootc (OS)
-  local b64; b64=$(printf '%s:%s' "$1" "$2" | base64 -w0)
-  install -d /etc/containers /etc/ostree
-  ( umask 077; printf '{"auths":{"ghcr.io":{"auth":"%s"}}}\n' "$b64" > /etc/containers/auth.json )
-  install -m 0600 /etc/containers/auth.json /etc/ostree/auth.json
-}
-
-write() {  # write <name> <content>  (atomic, 0600, root-owned)
+write() {  # write <name> <content>  (atomic, 0600, root-owned) under $CONF
   ( umask 077; printf '%s\n' "$2" > "$CONF/$1.tmp" ) && mv "$CONF/$1.tmp" "$CONF/$1"
+}
+
+write_sec() {  # write_sec <name> <content>  -> $SECRETS (tmpfs, root-only)
+  mkdir -p "$SECRETS"
+  ( umask 077; printf '%s\n' "$2" > "$SECRETS/$1.tmp" ) && mv "$SECRETS/$1.tmp" "$SECRETS/$1"
+}
+
+pull_image() {  # pull_image <image-ref>
+  [ -n "${1:-}" ] || return 0
+  if podman image exists "$1"; then
+    echo "agentbox: image present: $1"
+    return 0
+  fi
+  echo "agentbox: pulling $1 (can take a few minutes)..."
+  podman pull "$1"
+}
+
+quadlet_image() { sed -n 's/^Image=//p' "$1" 2>/dev/null | head -n1; }
+
+# Quadlets shipped in the image live under /usr/share/containers/systemd;
+# /etc/containers/systemd is where an operator may drop overrides.
+QUADLET_DIRS=(/usr/share/containers/systemd /etc/containers/systemd)
+quadlet_path() {  # quadlet_path <name> -> first match in the vendor dirs
+  local d
+  for d in "${QUADLET_DIRS[@]}"; do [ -e "$d/$1" ] && { printf '%s' "$d/$1"; return 0; }; done
+  return 1
+}
+
+pull_images() {  # every image referenced by the quadlets
+  local d u
+  for d in "${QUADLET_DIRS[@]}"; do
+    for u in "$d"/*.container; do
+      [ -e "$u" ] || continue
+      [ "$(basename "$u")" = tailscale.container ] && [ ! -s "$SECRETS/tailscale.env" ] && continue
+      pull_image "$(quadlet_image "$u")" || true
+    done
+  done
+}
+
+open_gate_firewall() {
+  command -v firewall-cmd >/dev/null 2>&1 || return 0
+  systemctl is-active --quiet firewalld 2>/dev/null || return 0
+  firewall-cmd --permanent --add-service=https >/dev/null 2>&1 || true
+  firewall-cmd --reload >/dev/null 2>&1 || true
+}
+
+start_vault() {  # start_vault - pull + start the vault container
+  local q; q=$(quadlet_path agent-vault.container) || q=
+  [ -n "$q" ] && pull_image "$(quadlet_image "$q")" || true
+  systemctl start agent-vault.service || die "vault container failed to start"
+}
+
+wait_vault() {
+  echo "agentbox: waiting for the vault..."
+  local i
+  for i in $(seq 1 60); do
+    curl -s -o /dev/null --max-time 2 "$HOST_VAULT_URL/" && return 0
+    [ $((i % 5)) -eq 0 ] && echo "agentbox: still waiting for the vault (~$((i*2))s)..."
+    sleep 2
+  done
+  curl -s -o /dev/null --max-time 2 "$HOST_VAULT_URL/" || die "vault is not answering on $HOST_VAULT_URL"
+}
+
+start_gate() {
+  systemctl start agentbox-gate.service || die "gate failed to start"
 }
 
 provision() {
@@ -58,28 +201,19 @@ provision() {
   : "${AGENT_VAULT_BOOTSTRAP_TOKEN:?}"
   export AGENT_VAULT_TOKEN="$AGENT_VAULT_BOOTSTRAP_TOKEN"
 
-  # Already provisioned: keep old values if the vault is unavailable.
   if have_files; then TRIES=3; else TRIES=30; fi
 
-  local ts pw dp px
-  if ts=$(fetch TS_AUTHKEY) && pw=$(fetch PASEO_PASSWORD) \
-     && dp=$(fetch PASSWORD) && px=$(fetch AGENT_VAULT_PROXY_TOKEN); then
-    write tailscale.env "TS_AUTHKEY=$ts"
-    write paseo.env     "PASEO_PASSWORD=$pw"$'\n'"PASSWORD=$dp"
-    write proxy.env     "AGENT_VAULT_ADDR=http://agent-vault:14321"$'\n'"AGENT_VAULT_VAULT=$PROXY_VAULT"$'\n'"AGENT_VAULT_TOKEN=$px"
+  local pw dp px ts
+  if pw=$(fetch PASEO_PASSWORD) && dp=$(fetch PASSWORD) && px=$(fetch AGENT_VAULT_PROXY_TOKEN); then
+    write_sec paseo.env "PASEO_PASSWORD=$pw"$'\n'"PASSWORD=$dp"
+    write_sec proxy.env "AGENT_VAULT_ADDR=http://agent-vault:14321"$'\n'"AGENT_VAULT_VAULT=$PROXY_VAULT"$'\n'"AGENT_VAULT_TOKEN=$px"
+    ts=$(fetch1 TS_AUTHKEY)
+    if [ -n "$ts" ]; then write_sec tailscale.env "TS_AUTHKEY=$ts"; else rm -f "$SECRETS/tailscale.env"; fi
     echo "agentbox: secrets synced from vault '$BOOT_VAULT'"
   elif have_files; then
     echo "agentbox: vault unavailable, keeping existing secrets" >&2
   else
     die "could not fetch secrets and none are cached"
-  fi
-
-  # Pull creds for private images (absent = packages are public).
-  local gu gt
-  gu=$(fetch1 GHCR_USER); gt=$(fetch1 GHCR_PULL_TOKEN)
-  if [ -n "$gu" ] && [ -n "$gt" ]; then
-    registry_auth "$gu" "$gt"
-    echo "agentbox: registry pull credentials written"
   fi
 }
 
@@ -88,225 +222,438 @@ mint() {  # mint <agent-name> <vault:role>  -> token on stdout
     || av agent rotate "$1" --token-only
 }
 
-setup() {
-  if [ -s $CONF/bootstrap.env ]; then
-    local a; read -rp "Already set up. Re-run and rotate every token and password? [y/N] " a
-    [ "$a" = y ] || return 0
+# ---------------------------------------------------------------------------
+# claim code / console banner
+
+setup_code() {
+  mkdir -p "$RUN"
+  local code ttl expiry
+  code=$(rand_code)
+  ttl=${AGENTBOX_CODE_TTL:-1800}
+  expiry=$(( $(date +%s) + ttl ))
+  ( umask 027; printf '%s\n%s\n' "$code" "$expiry" > "$CODE" ) || die "could not write $CODE"
+  chown "root:$GATE_UID" "$CODE" 2>/dev/null || true
+  chmod 640 "$CODE"
+  write_issue
+  echo "agentbox: issued a one-time claim code"
+}
+
+write_issue() {
+  local ip url code fp
+  ip=$(lan_ip); url="https://${ip:-agentbox.local}/"
+  code=$(head -n1 "$CODE" 2>/dev/null); fp=$(fingerprint)
+  mkdir -p /etc/issue.d
+  cat > "$ISSUE" <<EOF
+
+agentbox is waiting to be set up.
+  Open : $url
+  Code : $code
+  Cert : $fp
+  A fresh code: run 'agentbox setup-code' on this console.
+  No LAN route? Use 'agentbox setup --console' instead.
+EOF
+}
+
+claim_banner() {
+  local ip url code fp
+  ip=$(lan_ip); url="https://${ip:-agentbox.local}/"
+  code=$(head -n1 "$CODE" 2>/dev/null); fp=$(fingerprint)
+  echo
+  echo "==================== agentbox setup ===================="
+  echo " Open : $url"
+  echo " Code : $code"
+  echo " Cert : $fp"
+  echo "======================================================="
+  if podman image exists "$GATE_IMAGE" 2>/dev/null && [ -n "$code" ]; then
+    podman run --rm "$GATE_IMAGE" --qr "${url}?code=${code}" || true
   fi
-  authorize
-  systemctl start agent-vault.service || die "vault container failed to start"
-  echo "waiting for the vault..."
-  for _ in $(seq 60); do curl -s -o /dev/null --max-time 2 "http://127.0.0.1:14321/" && break; sleep 2; done
-  curl -s -o /dev/null --max-time 2 "http://127.0.0.1:14321/" || die "vault is not answering"
+}
 
-  local email anthropic gh ts opw gh_user gh_tok
-  read -rp  "Vault owner email [owner@agentbox.local]: " email; email=${email:-owner@agentbox.local}
-  read -rsp "Anthropic API key: " anthropic; echo
-  read -rsp "GitHub token (fine-grained, repo-scoped): " gh; echo
-  read -rsp "Tailscale auth key (tagged tag:agentbox): " ts; echo
-  [ -n "$anthropic" ] && [ -n "$gh" ] && [ -n "$ts" ] || die "all three keys are required"
+check_code() {  # check_code - issue a code if none/claimed-absent
+  claimed && return 0
+  [ -s "$CODE" ] || setup_code
+}
 
-  # Private images need pull creds on the box; skip if the packages are public.
-  read -rp  "GHCR username for private image pulls (blank if public): " gh_user
-  if [ -n "$gh_user" ]; then
-    read -rsp "GHCR read-only pull token (Packages: read): " gh_tok; echo
-    [ -n "$gh_tok" ] || die "pull token required when a username is given"
-  fi
+# ---------------------------------------------------------------------------
+# finalize steps (each idempotent; the whole run resumes from the checkpoint)
 
-  # First registered user becomes the owner. On a re-run "register" is
-  # a no-op that still exits 0, so detect an existing owner by trying
-  # to log in with the fresh password and falling back to a prompt.
-  opw=$(rand)
+start_vault_and_wait() { start_vault && wait_vault; }
+
+owner_login() {  # (re)establish an owner session from the stored claim password
+  local email opw
+  email=$(jq -r '.email // empty' "$CLAIM_ACTIVE" 2>/dev/null)
+  opw=$(jq -r '.password // empty' "$CLAIM_ACTIVE" 2>/dev/null)
+  [ -n "$email" ] && [ -n "$opw" ] || return 1
+  printf '%s\n' "$opw" | av auth login --address "$URL" --email "$email" --password-stdin >/dev/null 2>&1
+}
+
+register_owner() {
+  local email opw
+  email=$(jq -r '.email // empty' "$CLAIM_ACTIVE" 2>/dev/null)
+  opw=$(jq -r '.password // empty' "$CLAIM_ACTIVE" 2>/dev/null)
+  [ -n "$email" ] && [ -n "$opw" ] || return 1
   printf '%s\n' "$opw" | av auth register --address "$URL" --email "$email" --password-stdin >/dev/null 2>&1 || true
-  if ! printf '%s\n' "$opw" | av auth login --address "$URL" --email "$email" --password-stdin >/dev/null 2>&1; then
-    read -rsp "Existing owner password for $email: " opw; echo
-    printf '%s\n' "$opw" | av auth login --address "$URL" --email "$email" --password-stdin >/dev/null \
-      || die "owner login failed"
-  fi
+  printf '%s\n' "$opw" | av auth login --address "$URL" --email "$email" --password-stdin >/dev/null 2>&1 || return 1
+}
 
+create_vaults() {
+  owner_login || return 1
   av vault create "$BOOT_VAULT"  >/dev/null 2>&1 || true
   av vault create "$PROXY_VAULT" >/dev/null 2>&1 || true
-
-  # Brokered credentials + which hosts they apply to.
-  av vault credential set ANTHROPIC_API_KEY="$anthropic" GITHUB_TOKEN="$gh" --vault "$PROXY_VAULT" >/dev/null \
-    || die "could not store credentials"
-  av vault service set -f /dev/stdin --vault "$PROXY_VAULT" >/dev/null <<'EOF'
-services:
-  - name: anthropic
-    host: api.anthropic.com
-    auth:
-      type: api-key
-      key: ANTHROPIC_API_KEY
-      header: x-api-key
-  - name: github-api
-    host: api.github.com
-    auth:
-      type: bearer
-      token: GITHUB_TOKEN
-  - name: github
-    host: github.com
-    auth:
-      type: bearer
-      token: GITHUB_TOKEN
-EOF
-  [ $? -eq 0 ] || die "could not set services"
-
-  # Tokens: proxy-role for the agent, member-role for boot-time provisioning.
-  local ptok mtok dpw ppw
-  ptok=$(mint agentbox-proxy     "$PROXY_VAULT:proxy")  || die "could not mint proxy token"
-  mtok=$(mint agentbox-provision "$BOOT_VAULT:member")  || die "could not mint member token"
-  [ -n "$ptok" ] && [ -n "$mtok" ] || die "empty token"
-
-  dpw=$(rand); ppw=$(rand)
-  av vault credential set TS_AUTHKEY="$ts" PASEO_PASSWORD="$ppw" PASSWORD="$dpw" \
-     AGENT_VAULT_PROXY_TOKEN="$ptok" --vault "$BOOT_VAULT" >/dev/null || die "could not store box secrets"
-  if [ -n "$gh_user" ]; then
-    av vault credential set GHCR_USER="$gh_user" GHCR_PULL_TOKEN="$gh_tok" --vault "$BOOT_VAULT" >/dev/null \
-      || die "could not store GHCR pull credentials"
-  fi
-  write bootstrap.env "AGENT_VAULT_BOOTSTRAP_TOKEN=$mtok"
-
-  # Lock the vault down and leave no owner session on disk.
-  av owner config set --invite-only >/dev/null 2>&1 || echo "warning: could not enable invite-only; do it in the vault UI"
-  podman exec agent-vault rm -f /data/.agent-vault/session.json
-
-  cat <<EOF
-
----- SAVE THESE NOW (shown once) ----
-Desktop login : user "agent"   password: $dpw
-Paseo password: $ppw
-Vault owner   : $email   password: $opw
-(vault UI: ssh -L 14321:127.0.0.1:14321 <you>@agentbox -> http://localhost:14321)
---------------------------------------
-
-EOF
-  up
 }
+
+mint_tokens() {
+  load_state
+  [ -n "${PROXY_TOKEN:-}" ] && [ -n "${MEMBER_TOKEN:-}" ] && return 0
+  owner_login || return 1
+  local pt mt
+  pt=$(mint agentbox-proxy     "$PROXY_VAULT:proxy")  || return 1
+  mt=$(mint agentbox-provision "$BOOT_VAULT:member")  || return 1
+  [ -n "$pt" ] && [ -n "$mt" ] || return 1
+  state_add PROXY_TOKEN "$pt"; state_add MEMBER_TOKEN "$mt"
+}
+
+make_passphrases() {
+  load_state
+  [ -n "${DESKTOP_PASSWORD:-}" ] && [ -n "${PASEO_PASSWORD:-}" ] && return 0
+  state_add DESKTOP_PASSWORD "$(rand)"; state_add PASEO_PASSWORD "$(rand)"
+}
+
+store_boot_creds() {
+  load_state
+  : "${PROXY_TOKEN:?}" "${MEMBER_TOKEN:?}" "${DESKTOP_PASSWORD:?}" "${PASEO_PASSWORD:?}"
+  owner_login || return 1
+  av vault credential set PASEO_PASSWORD="$PASEO_PASSWORD" PASSWORD="$DESKTOP_PASSWORD" \
+     AGENT_VAULT_PROXY_TOKEN="$PROXY_TOKEN" --vault "$BOOT_VAULT" >/dev/null || return 1
+  if [ -n "${TS_AUTHKEY:-}" ]; then
+    av vault credential set TS_AUTHKEY="$TS_AUTHKEY" --vault "$BOOT_VAULT" >/dev/null || return 1
+  fi
+}
+
+write_bootstrap() {
+  load_state
+  : "${MEMBER_TOKEN:?}"
+  write bootstrap.env "AGENT_VAULT_BOOTSTRAP_TOKEN=$MEMBER_TOKEN"
+}
+
+mark_claimed() {
+  load_state
+  local email
+  email=$(jq -r '.email // empty' "$CLAIM_ACTIVE" 2>/dev/null); [ -n "$email" ] || email=owner@agentbox.local
+  owner_login || true
+  av owner config set --invite-only >/dev/null 2>&1 || echo "agentbox: warning: could not enable invite-only" >&2
+  podman exec agent-vault rm -f /data/.agent-vault/session.json 2>/dev/null || true
+  rm -f "$ISSUE"
+  # The installer writes the LUKS recovery key here; surface it once, in the
+  # browser result, so the user can store it (the file itself stays root-only).
+  # ponytail: read-only fallback; regenerate via `systemd-cryptenroll
+  # --recovery-key` on the box if it's ever missing.
+  local rk=""
+  [ -s /root/recovery-key.txt ] && rk=$(tr -d '\n' < /root/recovery-key.txt)
+  jq -n --arg u "$(gate_url)" --arg e "$email" \
+        --arg d "$DESKTOP_PASSWORD" --arg p "$PASEO_PASSWORD" --arg r "$rk" \
+        '{url:$u,email:$e,desktop_password:$d,paseo_password:$p,recovery_key:$r}' > "$RUN/finalize-result.json"
+  chmod 640 "$RUN/finalize-result.json"
+  chown "root:$GATE_UID" "$RUN/finalize-result.json" 2>/dev/null || true
+  date -u +%FT%TZ > "$CLAIMED"
+  local start_units=agentbox.service
+  [ -s "$SECRETS/tailscale.env" ] && start_units="tailscale.service agentbox.service"
+  systemctl start --no-block $start_units >/dev/null 2>&1 || true
+}
+
+finalize() {
+  local console=0
+  [ "${1:-}" = --console ] && console=1
+  mkdir -p "$LIB" "$RUN"
+  exec 9>"$RUN/finalize.lock"
+  flock -n 9 || { echo "agentbox: finalize already running" >&2; exit 0; }
+  if claimed; then echo "agentbox: already claimed"; return 0; fi
+  rm -f "$RUN/finalize-error"
+  touch "$CHECKPOINT"
+  # Surface any hard exit (unbound var, a command that dies) to the browser too.
+  trap 'rc=$?; if [ $rc -ne 0 ] && [ ! -s "$RUN/finalize-error" ]; then printf "finalize exited unexpectedly (status %s); see: journalctl -u agentbox-finalize.service\n" "$rc" > "$RUN/finalize-error"; fi' EXIT
+
+  if [ "$console" != 1 ]; then
+    if [ -s "$CLAIM" ]; then mv -f "$CLAIM" "$CLAIM_ACTIVE"; fi
+    chmod 600 "$CLAIM_ACTIVE" 2>/dev/null || true
+    [ -s "$CLAIM_ACTIVE" ] || fail_finalize "no claim to finalize"
+  fi
+  [ -s "$CLAIM_ACTIVE" ] || fail_finalize "no claim to finalize"
+
+  step start-vault    start_vault_and_wait
+  step register-owner register_owner
+  step vaults         create_vaults
+  mint_tokens    || fail_finalize "could not mint the vault tokens"
+  make_passphrases || fail_finalize "could not generate the passphrases"
+  step boot-creds     store_boot_creds
+  step bootstrap      write_bootstrap
+  step provision      provision
+  step claimed        mark_claimed
+
+  rm -f "$STATE" "$CLAIM_ACTIVE"
+  echo "agentbox: finalize complete"
+}
+
+# ---------------------------------------------------------------------------
+# console-only setup fallback (no LAN route / client isolation)
+
+console_finalize() {
+  local email opw opw2 ts
+  echo
+  echo "---- console setup: create the vault owner ----"
+  read -rp  "Vault owner email [owner@agentbox.local]: " email; email=${email:-owner@agentbox.local}
+  while :; do
+    read -rsp "Vault owner password (min 8 chars): " opw; echo
+    [ "${#opw}" -ge 8 ] && break
+    echo "agentbox: too short"
+  done
+  read -rsp "Confirm password: " opw2; echo
+  [ "$opw" = "$opw2" ] || die "passwords do not match"
+  read -rsp "Tailscale auth key (tagged tag:agentbox; blank = LAN-only): " ts; echo
+  ( umask 077; jq -n --arg e "$email" --arg p "$opw" '{email:$e,password:$p}' > "$CLAIM_ACTIVE" )
+  if [ -n "$ts" ]; then ( umask 077; printf 'TS_AUTHKEY=%q\n' "$ts" >> "$STATE" ); fi
+  finalize --console
+  howto_access "$email" "$ts"
+}
+
+# ---------------------------------------------------------------------------
+# admin identity
+
+default_admin() {  # best guess at the already-provisioned admin user
+  local u=${AGENTBOX_USER:-} a members
+  [ -n "$u" ] && { printf '%s' "$u"; return 0; }
+  for a in $(cat /proc/cmdline); do case "$a" in agentbox.user=*) printf '%s' "${a#agentbox.user=}"; return 0;; esac; done
+  members=$(getent group wheel 2>/dev/null | awk -F: '{print $4}' | tr ',' ' ')
+  set -- $members
+  [ $# -eq 1 ] && [ "$1" != root ] && printf '%s' "$1"
+  return 0
+}
+
+gh_keys() { curl -fsSL --max-time 15 "https://github.com/$1.keys" 2>/dev/null; }
+
+resolve_keys() {  # resolve_keys <pubkey-or-github-user> -> keys on stdout
+  local in=$1 ks
+  case "$in" in
+    ssh-*|ecdsa-*|sk-*) printf '%s\n' "$in"; return 0 ;;
+  esac
+  printf '%s' "$in" | grep -qE '^[A-Za-z0-9]([A-Za-z0-9-]{0,38})$' || return 1
+  ks=$(gh_keys "$in") || return 1
+  [ -n "$ks" ] || return 1
+  printf '%s\n' "$ks"
+}
+
+valid_user() { [[ "${1:-}" =~ ^[a-z_][a-z0-9_-]{0,30}$ ]]; }
+
+disable_password_ssh() {
+  if install -d -m 755 /etc/ssh/sshd_config.d 2>/dev/null \
+     && printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\n' \
+          > /etc/ssh/sshd_config.d/50-agentbox-no-password.conf; then
+    systemctl reload sshd 2>/dev/null || systemctl restart sshd 2>/dev/null || true
+    echo "agentbox: SSH password login disabled (key-only)"
+  else
+    echo "agentbox: could not write the sshd drop-in (need root)" >&2
+  fi
+}
+
+authorize() {  # authorize [add] - add the admin user's SSH key(s)
+  local add=${1:-} u in ks a ghuser=${AGENTBOX_GHUSER:-}
+  for a in $(cat /proc/cmdline); do
+    case "$a" in agentbox.ghuser=*) ghuser=${a#agentbox.ghuser=} ;; esac
+  done
+  stty sane 2>/dev/null || true
+
+  u=$(default_admin)
+  [ -n "$u" ] || u=${SUDO_USER:-}
+  if [ -z "$u" ] || [ "$u" = root ]; then
+    local def=${AGENTBOX_USER:-admin}
+    while :; do
+      read -rp "Admin username [$def]: " u || u=""
+      u=${u:-$def}
+      valid_user "$u" && break
+      echo "agentbox: '$u' is not a valid Linux username (lowercase letters, digits, '_' or '-')."
+    done
+  fi
+  valid_user "$u" || die "invalid admin username '$u'"
+  if ! id -u "$u" >/dev/null 2>&1; then
+    echo "agentbox: creating user $u"
+    useradd -m -G wheel -s /bin/bash "$u" || die "could not create user $u"
+  fi
+  local home f
+  home=$(getent passwd "$u" | cut -d: -f6); [ -n "$home" ] || die "no home directory for $u"
+  f="$home/.ssh/authorized_keys"
+  has_keys() {
+    [ -s "$f" ] && return 0
+    [ -d "$home/.ssh/authorized_keys.d" ] && [ -n "$(ls -A "$home/.ssh/authorized_keys.d" 2>/dev/null)" ]
+  }
+
+  if has_keys && [ "$add" != add ]; then
+    echo "agentbox: $u already has SSH keys"
+  else
+    if [ -n "$ghuser" ]; then
+      echo "agentbox: fetching SSH keys for GitHub user $ghuser"
+      ks=$(resolve_keys "$ghuser") || die "could not fetch keys for GitHub user $ghuser"
+    else
+      read -rp "SSH public key or GitHub username for $u (blank to skip): " in
+      if [ -z "$in" ]; then
+        echo "agentbox: no key given; add one later with 'agentbox authorize add'"
+        return 0
+      fi
+      ks=$(resolve_keys "$in") || die "not an SSH key or GitHub username: $in"
+    fi
+    install -d -m 700 -o "$u" -g "$u" "$home/.ssh"
+    local n=0
+    while IFS= read -r key; do
+      [ -n "$key" ] || continue
+      if grep -qF "$key" "$f" 2>/dev/null; then continue; fi
+      printf '%s\n' "$key" >> "$f"; n=$((n+1))
+    done <<<"$ks"
+    chown "$u:$u" "$f"; chmod 600 "$f"
+    echo "agentbox: installed $n SSH key(s) for $u"
+  fi
+
+  if has_keys; then
+    disable_password_ssh
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# setup
+
+setup() {
+  local console=0
+  [ "${1:-}" = --console ] && console=1
+  mkdir -p "$LIB" "$RUN"
+  if claimed && [ "$console" != 1 ]; then
+    echo "agentbox: already claimed; use 'agentbox up' to (re)start the desktop"
+    return 0
+  fi
+
+  open_gate_firewall
+  start_vault
+  wait_vault
+
+  if ! pull_image "$GATE_IMAGE"; then
+    echo "agentbox: could not fetch the gate image ($GATE_IMAGE)." >&2
+    [ "$console" = 1 ] || die "no gate image; use 'agentbox setup --console' for the console path"
+  fi
+  start_gate
+
+  if ! identity; then
+    authorize
+    write_identity
+  fi
+
+  if [ "$console" = 1 ]; then
+    console_finalize
+    return 0
+  fi
+  check_code
+  claim_banner
+  echo
+  echo "agentbox: waiting for a browser claim (URL + code above, also on the console)."
+}
+
+write_identity() { mkdir -p "$LIB"; date -u +%FT%TZ > "$IDENTITY"; }
+
+# ---------------------------------------------------------------------------
+# status / up
 
 status() {
   local bad=0 hostip
   chk() { local d=$1; shift
     if "$@" >/dev/null 2>&1; then printf '  ok    %s\n' "$d"
     else printf '  FAIL  %s\n' "$d"; bad=1; fi; }
-  blocked() { ! podman exec agentbox timeout 3 bash -c "exec 3<>/dev/tcp/$1/22"; }
-  hostip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
+  blocked() { ! podman exec agentbox timeout 3 bash -c "exec 3<>/dev/tcp/$1/$2"; }
+  hostip=$(lan_ip)
 
   chk "container firewall loaded"   nft list table inet agentbox
   chk "vault running"               systemctl is-active --quiet agent-vault.service
-  chk "vault API answers"           curl -s -o /dev/null --max-time 5 http://127.0.0.1:14321/
+  chk "vault API answers"           curl -s -o /dev/null --max-time 5 "$HOST_VAULT_URL/"
+  chk "gate running"                systemctl is-active --quiet agentbox-gate.service
+  chk "gate TLS answers"            curl -sk -o /dev/null --max-time 5 https://127.0.0.1/healthz
+
+  if ! claimed; then
+    printf '  --    not claimed yet - open %s (code on the console)\n' "$(gate_url)"
+    return 0
+  fi
+
   chk "secrets provisioned"         have_files
-  chk "tailscale running"           systemctl is-active --quiet tailscale.service
-  chk "tailscale logged in"         podman exec tailscale tailscale status
+  if [ -s "$SECRETS/tailscale.env" ]; then
+    chk "tailscale running"         systemctl is-active --quiet tailscale.service
+    chk "tailscale logged in"       podman exec tailscale tailscale status
+  else
+    printf '  --    tailscale disabled (LAN-only)\n'
+  fi
   chk "agentbox running"            systemctl is-active --quiet agentbox.service
   chk "paseo health"                curl -fs --max-time 5 http://127.0.0.1:6767/api/health
   chk "desktop login page (nginx)"  curl -s -o /dev/null --max-time 5 http://127.0.0.1:8080/
   chk "X display :1 up"             podman exec agentbox xdpyinfo -display :1
   chk "computer-use MCP installed"  podman exec agentbox sh -c 'command -v computer-use-linux'
   chk "agent -> vault token valid"  podman exec agentbox agent-vault vault discover
-  chk "brokered Anthropic call"     podman exec agentbox agent-vault run -- \
-                                      curl -fsS -o /dev/null https://api.anthropic.com/v1/models
-  [ -n "$hostip" ] && chk "agent cannot reach host ($hostip:22)" blocked "$hostip"
-  echo; podman exec tailscale tailscale serve status 2>/dev/null | head -n 4
+  local svc
+  while read -r svc; do
+    [ -n "$svc" ] || continue
+    case "$svc" in *'*'*|*/*) continue ;; esac
+    chk "brokered $svc" podman exec agentbox agent-vault run -- \
+        curl -sS -o /dev/null --max-time 20 "https://$svc/"
+  done < <(podman exec agentbox agent-vault vault discover --json 2>/dev/null \
+             | jq -r '.services[].host' 2>/dev/null)
+  if [ -n "$hostip" ]; then
+    chk "agent cannot reach host ($hostip:22)"    blocked "$hostip" 22
+    chk "agent cannot reach vault ($hostip:14331)" blocked "$hostip" 14331
+  fi
+  if [ "$(systemctl is-active agentbox.service 2>/dev/null)" = activating ]; then
+    printf '  ..    agentbox starting (pulling the desktop image)\n'
+  fi
+  if [ -s "$SECRETS/tailscale.env" ]; then
+    echo; podman exec tailscale tailscale serve status 2>/dev/null | head -n 4
+  else
+    echo; echo "LAN: https://$hostip/ (vault)  http://$hostip:8080 (desktop)  http://$hostip:6767 (Paseo)"
+  fi
   return $bad
 }
 
 up() {
   provision || exit 1
   systemctl restart agentbox-firewall.service
-  systemctl restart tailscale.service agentbox.service
+  echo "agentbox: starting the agent desktop"
+  echo "agentbox: first boot downloads the container images; this can take a few minutes."
+  pull_images
+  local units=agentbox.service
+  [ -s "$SECRETS/tailscale.env" ] && units="tailscale.service agentbox.service"
+  systemctl restart --no-block $units
   echo "waiting for Paseo + desktop..."
-  for _ in $(seq 60); do
+  local i
+  for i in $(seq 1 36); do
     curl -fs -o /dev/null --max-time 3 http://127.0.0.1:6767/api/health && break
+    echo "agentbox: still bringing up Paseo (~$((i*5))s)..."
     sleep 5
   done
-  status
+  status || true
+  return 0
 }
 
-allow() {  # allow [ip|cidr ...] | allow clear  - extra egress allowlist
-  # Destinations the MCP config can't express (shared services, bare
-  # hostnames). The MCP-derived list is separate and always applied.
-  local f=$CONF/firewall.allow.nft d
-  if [ $# -eq 0 ]; then
-    if [ -s "$f" ]; then cat "$f"; else echo "no LAN/tailnet destinations allowed"; fi
-    return 0
-  fi
-  if [ "$1" = clear ]; then
-    rm -f "$f"
-  else
-    { echo "# LAN/tailnet destinations the agent container may reach."
-      echo "# Regenerated by 'agentbox allow'; reload: systemctl restart agentbox-firewall"
-      for d in "$@"; do
-        local fam=lan
-        case "$d" in *:*) fam=lan6 ;; esac
-        case "$d" in */*) fam="${fam}_cidr" ;; esac
-        echo "add element inet agentbox allow_${fam} { $d }"
-      done
-    } > "$f"
-  fi
-  systemctl restart agentbox-firewall.service
-  echo "agentbox: egress allowlist updated"
-}
-
-authorize() {  # authorize [add] - install an SSH key for the sudo user
-  # 'setup' runs this on first boot; also usable on its own. 'add' forces the
-  # key prompt even when the user already has keys.
-  local u=${SUDO_USER:-} home f key a
-  if [ -z "$u" ] || [ "$u" = root ]; then
-    read -rp "Authorize SSH for user (blank to skip): " u
-    [ -n "$u" ] || { echo "agentbox: skipping SSH key"; return 0; }
-    id -u "$u" >/dev/null 2>&1 || die "no such user: $u"
-  fi
-  home=$(getent passwd "$u" | cut -d: -f6)
-  [ -n "$home" ] || die "no home directory for $u"
-  f="$home/.ssh/authorized_keys"
-
-  if [ -s "$f" ] && [ "${1:-}" != add ]; then
-    echo "agentbox: $u already has SSH keys in $f"
-  else
-    read -rp "SSH public key for $u (blank to skip): " key
-    if [ -z "$key" ]; then
-      echo "agentbox: no key given; log in with the password you set at install"
-    else
-      case "$key" in
-        ssh-*|ecdsa-*|sk-*) : ;;
-        *) die "that does not look like an SSH public key" ;;
-      esac
-      install -d -m 700 -o "$u" -g "$u" "$home/.ssh"
-      if grep -qF "$key" "$f" 2>/dev/null; then
-        echo "agentbox: key already present"
-      else
-        printf '%s\n' "$key" >> "$f"
-        chown "$u:$u" "$f"; chmod 600 "$f"
-        echo "agentbox: installed SSH key for $u"
-      fi
-    fi
-  fi
-
-  [ -s "$f" ] || return 0
-  read -rp "Disable SSH password login now (key-only)? [y/N] " a
-  [ "$a" = y ] || return 0
-  if install -d -m 755 /etc/ssh/sshd_config.d 2>/dev/null \
-     && printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\n' \
-          > /etc/ssh/sshd_config.d/50-agentbox-no-password.conf; then
-    systemctl reload sshd 2>/dev/null || systemctl restart sshd 2>/dev/null || true
-    echo "agentbox: password SSH disabled (key-only)"
-  else
-    echo "agentbox: could not write the sshd drop-in (need root)" >&2
-  fi
+passphrase() {
+  [ -r "$CONF/bootstrap.env" ] || die "not claimed yet"
+  . "$CONF/bootstrap.env"
+  export AGENT_VAULT_TOKEN="$AGENT_VAULT_BOOTSTRAP_TOKEN"
+  local dp pp
+  dp=$(fetch PASSWORD) || die "could not read the desktop password"
+  pp=$(fetch PASEO_PASSWORD) || die "could not read the Paseo password"
+  printf 'desktop: %s\npaseo:   %s\n' "$dp" "$pp"
 }
 
 cmd=${1:-up}; shift || true
 case "$cmd" in
-  setup)     setup ;;
-  provision) provision ;;
-  up)        up ;;
-  status)    status ;;
-  logs)      exec journalctl -fu agentbox.service -u agent-vault.service ;;
-  shell)     exec podman exec -it agentbox bash ;;
-  login)     read -rp "Owner email: " e; av auth login --address "$URL" --email "$e" ;;
-  logout)    podman exec agent-vault rm -f /data/.agent-vault/session.json ;;
-  authorize) authorize "$@" ;;
-  allow)     allow "$@" ;;
-  av)        av "$@" ;;
-  *)         die "usage: agentbox setup|up|status|logs|shell|login|logout|authorize|allow|av" ;;
+  setup)        setup "${1:-}" ;;
+  finalize)     finalize "$@" ;;
+  setup-code)   setup_code ;;
+  claim-banner) claim_banner ;;
+  provision)    provision ;;
+  up)           up ;;
+  status)       status ;;
+  passphrase)   passphrase ;;
+  logs)         exec journalctl -fu agentbox.service -u agent-vault.service -u agentbox-gate.service ;;
+  authorize)    authorize "$@" ;;
+  *)            die "usage: agentbox setup [--console] | finalize | setup-code | claim-banner | up | status | passphrase | logs | authorize [add]" ;;
 esac

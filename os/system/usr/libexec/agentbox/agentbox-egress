@@ -9,8 +9,7 @@
 # environment, or a command argument - resolving url hostnames.
 # Only addresses in the ranges the base firewall blocks are emitted
 # (public hosts are already reachable). Writes firewall.mcp.nft,
-# which agentbox-firewall.service loads. `agentbox allow` still adds
-# extra destinations on top.
+# which agentbox-firewall.service loads after the static policy.
 set -uo pipefail
 
 CFG=${1:-/usr/share/agentbox/opencode.json}
