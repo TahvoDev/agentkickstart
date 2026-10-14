@@ -31,8 +31,7 @@ URL=http://127.0.0.1:14321             # vault API from inside its container
 HOST_VAULT_URL=http://127.0.0.1:14331  # vault API as published on host loopback
 BOOT_VAULT=agentbox-boot               # box secrets, read at boot by a member-role token
 PROXY_VAULT=agentbox                   # brokered creds; the agent only gets a proxy-role token
-GATE_IMAGE=ghcr.io/__OWNER__/__GATE_IMAGE__:edge
-GATE_UID=10003
+GATE=/usr/libexec/agentbox/agentbox-gate  # the baked-in claim UI / vault proxy
 
 IDENTITY=$LIB/identity
 CLAIMED=$LIB/claimed
@@ -231,9 +230,7 @@ setup_code() {
   code=$(rand_code)
   ttl=${AGENTBOX_CODE_TTL:-1800}
   expiry=$(( $(date +%s) + ttl ))
-  ( umask 027; printf '%s\n%s\n' "$code" "$expiry" > "$CODE" ) || die "could not write $CODE"
-  chown "root:$GATE_UID" "$CODE" 2>/dev/null || true
-  chmod 640 "$CODE"
+  ( umask 077; printf '%s\n%s\n' "$code" "$expiry" > "$CODE" ) || die "could not write $CODE"
   write_issue
   echo "agentbox: issued a one-time claim code"
 }
@@ -264,8 +261,8 @@ claim_banner() {
   echo " Code : $code"
   echo " Cert : $fp"
   echo "======================================================="
-  if podman image exists "$GATE_IMAGE" 2>/dev/null && [ -n "$code" ]; then
-    podman run --rm "$GATE_IMAGE" --qr "${url}?code=${code}" || true
+  if [ -n "$code" ]; then
+    "$GATE" --qr "${url}?code=${code}" || true
   fi
 }
 
@@ -353,8 +350,7 @@ mark_claimed() {
   jq -n --arg u "$(gate_url)" --arg e "$email" \
         --arg d "$DESKTOP_PASSWORD" --arg p "$PASEO_PASSWORD" --arg r "$rk" \
         '{url:$u,email:$e,desktop_password:$d,paseo_password:$p,recovery_key:$r}' > "$RUN/finalize-result.json"
-  chmod 640 "$RUN/finalize-result.json"
-  chown "root:$GATE_UID" "$RUN/finalize-result.json" 2>/dev/null || true
+  chmod 600 "$RUN/finalize-result.json"
   date -u +%FT%TZ > "$CLAIMED"
   local start_units=agentbox.service
   [ -s "$SECRETS/tailscale.env" ] && start_units="tailscale.service agentbox.service"
@@ -531,11 +527,6 @@ setup() {
   open_gate_firewall
   start_vault
   wait_vault
-
-  if ! pull_image "$GATE_IMAGE"; then
-    echo "agentbox: could not fetch the gate image ($GATE_IMAGE)." >&2
-    [ "$console" = 1 ] || die "no gate image; use 'agentbox setup --console' for the console path"
-  fi
   start_gate
 
   if ! identity; then

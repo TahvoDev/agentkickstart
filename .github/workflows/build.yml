@@ -1,6 +1,6 @@
 name: build
 
-# Builds and pushes both images to GHCR and publishes the installer ISO, all on
+# Builds and pushes the agent + OS images to GHCR and publishes the installer ISO, all on
 # a hosted runner. The installer uses the `bootc-generic-iso` image type, whose
 # kernel/EFI come from an installer container (os/iso) we build - no Fedora
 # build host needed, unlike the bootc-installer type.
@@ -31,7 +31,6 @@ jobs:
       # Pre-release tag: the box tracks :edge while testing. Promote a digest
       # to :latest (and optionally flip package visibility) at release.
       AGENT_TAG: edge
-      GATE_TAG: edge
       OS_TAG: edge
     steps:
       # Full history so the change-detection step can diff against the pushed
@@ -46,14 +45,15 @@ jobs:
       - name: did anything the ISO depends on change?
         id: os_changes
         run: |
-          # Manual runs always rebuild; on push, only if os/ or build.sh moved.
+          # Manual runs always rebuild; on push, only if something the OS image
+          # bakes in moved (os/, the gate source, the MCP config, build.sh).
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             changed=true
           else
             before="${{ github.event.before }}"
             if [ -z "$before" ] || ! git cat-file -e "${before}^{commit}" 2>/dev/null; then
               changed=true
-            elif git diff --quiet "$before" "$GITHUB_SHA" -- os build.sh; then
+            elif git diff --quiet "$before" "$GITHUB_SHA" -- os build.sh gate agent/opencode.json; then
               changed=false
             else
               changed=true
@@ -76,10 +76,9 @@ jobs:
           printf '%s' "$CR_TOKEN" | podman login --authfile "$AUTH" ghcr.io -u '${{ github.actor }}' --password-stdin
           echo "REGISTRY_AUTH_FILE=$AUTH" >> "$GITHUB_ENV"
 
-      - name: build + push agent, gate and OS images
+      - name: build + push agent and OS images
         run: |
           ./build.sh agent
-          ./build.sh gate
           ./build.sh os
 
       - name: install cosign
@@ -97,12 +96,11 @@ jobs:
             cosign sign --yes "$1@$(cat "$RUNNER_TEMP/digest")"
           }
           sign "ghcr.io/$OWNER/agentbox-agent:$AGENT_TAG"
-          sign "ghcr.io/$OWNER/agentbox-gate:$GATE_TAG"
           sign "ghcr.io/$OWNER/agentbox-os:$OS_TAG"
 
       - name: verify signatures (self-check)
         run: |
-          for image in "ghcr.io/$OWNER/agentbox-agent:$AGENT_TAG" "ghcr.io/$OWNER/agentbox-gate:$GATE_TAG" "ghcr.io/$OWNER/agentbox-os:$OS_TAG"; do
+          for image in "ghcr.io/$OWNER/agentbox-agent:$AGENT_TAG" "ghcr.io/$OWNER/agentbox-os:$OS_TAG"; do
             cosign verify "$image" \
               --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/build.yml@.*$" \
               --certificate-oidc-issuer https://token.actions.githubusercontent.com
@@ -117,7 +115,6 @@ jobs:
     env:
       OWNER: ${{ github.repository_owner }}
       AGENT_TAG: edge
-      GATE_TAG: edge
       OS_TAG: edge
     steps:
       - uses: actions/checkout@v4

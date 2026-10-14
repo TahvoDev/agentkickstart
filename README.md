@@ -7,22 +7,25 @@
 A bootc image (plus its containers) that turns a PC into a self-contained agent
 box: Paseo + OpenCode agents on a real XFCE desktop (Xvfb + noVNC), reached over
 your LAN or a Tailscale tailnet, with credentials brokered by a local Agent
-Vault. The host is immutable and deliberately tiny; the desktop and the brokers
-run as containers.
+Vault. The host is immutable and deliberately tiny; the desktop and the Agent
+Vault run as containers, and the tiny claim proxy (the *gate*) is a binary baked
+into the image.
 
 The image is **generic**: no user, key or password is baked in. Identity is
 created at first boot — a small console wizard sets up the admin user + SSH key,
 then a one-time browser *claim* creates the vault owner and prints the
 passwords (and the disk recovery key) once.
 
-Four artifacts, one repo:
+Three artifacts, one repo:
 
 | Artifact | Source | Where it goes |
 | --- | --- | --- |
 | **agent image** (`ghcr.io/OWNER/agentbox-agent`) | `agent/` | pulled by the box at runtime |
-| **gate image** (`ghcr.io/OWNER/agentbox-gate`) | `gate/` | the TLS claim UI + vault reverse proxy |
 | **OS image** (`ghcr.io/OWNER/agentbox-os`) | `os/` | installed by the installer ISO |
 | **installer ISO** (`output/install.iso`) | `os/iso/` | booted to install the OS image |
+
+The claim UI / vault proxy (the *gate*, `gate/`) is a tiny static Go binary; it
+is compiled into the OS image, not shipped as its own image.
 
 ## Layout
 
@@ -32,19 +35,18 @@ agent/                     the agent desktop container image
   opencode.json            MCP servers (also the egress source of truth)
   nginx.conf
   start-agent.sh
-gate/                      the gate container: one-time claim UI, then a
-  main.go                  reverse proxy to the vault; also renders the QR
-  page.go                  code for `agentbox setup`
-  Containerfile
+gate/                      the gate source: one-time claim UI, then a reverse
+  main.go                  proxy to the vault; also renders the QR for
+  page.go                  `agentbox setup`. Compiled into the OS image.
 os/                        the bootc OS image
-  Containerfile            COPY the payload + enable units
+  Containerfile            builds the gate + COPYs the payload + enables units
   iso/                     bootc-generic-iso installer (Anaconda + picker + kickstart)
   system/                  the host payload, one file per source of truth (vendor /usr)
     usr/bin/agentbox              the one CLI (setup/finalize/up/status/authorize)
     usr/libexec/agentbox/agentbox-egress  derives the LAN allowlist from the MCP config
-    usr/lib/tmpfiles.d/           creates the volume/config dirs with owners
     usr/lib/systemd/system/       firewall / vault / provision / selinux / claim units
-    usr/share/containers/systemd/ quadlets (agentbox, agent-vault, gate, tailscale, net)
+    usr/lib/tmpfiles.d/           creates the volume/config dirs with owners
+    usr/share/containers/systemd/ quadlets (agentbox, agent-vault, tailscale, net)
     usr/share/agentbox/           static firewall policy, MCP config, tailscale serve config
 build.sh                   build + push the images; build the installer ISO
 deploy.sh                  dev loop: build+push :dev and `bootc switch` a live box
@@ -82,12 +84,12 @@ CI publishes the ISO — no local build needed.
 `.github/workflows/build.yml` has two jobs on push to `main` (or manual
 dispatch):
 
-- **images** (hosted `ubuntu-latest`) builds and pushes **agent**, **gate** and
-  **OS** images to your GHCR namespace, then keyless-signs and self-verifies
-  them. It uses the workflow's built-in `GITHUB_TOKEN` (`packages: write`) — no
-  PAT. While testing it tags `:edge`; promote a digest to `:latest` and/or flip
-  the packages public at release (the box pulls the gate + agent images without
-  auth, so those packages must be public for an unauthenticated install).
+- **images** (hosted `ubuntu-latest`) builds and pushes the **agent** and **OS**
+  images to your GHCR namespace, then keyless-signs and self-verifies them. It
+  uses the workflow's built-in `GITHUB_TOKEN` (`packages: write`) — no PAT.
+  While testing it tags `:edge`; promote a digest to `:latest` and/or flip the
+  packages public at release (the box pulls the agent image without auth, so
+  that package must be public for an unauthenticated install).
 - **installer** builds `install.iso` with the `bootc-generic-iso` type (kernel +
   EFI come from the `os/iso` installer container, so it builds anywhere with
   podman + sudo) and replaces the `install.iso` asset on the rolling `edge`
@@ -100,16 +102,15 @@ via `podman-auto-update.timer`.
 
 ```sh
 OWNER=youruser ./build.sh agent        # build + push the agent image
-OWNER=youruser ./build.sh gate         # build + push the gate image
-OWNER=youruser ./build.sh os           # build + push the OS image
+OWNER=youruser ./build.sh os           # build + push the OS image (includes the gate)
 OWNER=youruser ./build.sh installer    # -> ./output/install.iso
 ```
 
 The fast loop once a box is running: `OWNER=youruser ./deploy.sh os <ssh-target>`
 rebuilds the OS image, pushes `:dev`, and `bootc switch`es the box (then
-reboots). Everything under `os/` — CLI, units, quadlets, firewall — comes along
-in the image, so there is no rsync path. `deploy.sh agent` / `deploy.sh gate`
-just push and restart the one container.
+reboots). Everything under `os/` and `gate/` — CLI, units, quadlets, firewall,
+gate — comes along in the image, so there is no rsync path. `deploy.sh agent`
+just pushes and restarts the one container.
 
 ## First boot
 
@@ -159,8 +160,8 @@ mDNS `.local` names stay unreachable by design.
 - The GitHub token should be **fine-grained and repo-scoped**; the Anthropic key
   should have a **spend limit**. The box brokers these, so a key's blast radius
   is whatever the key itself allows.
-- The gate + agent packages must be pullable without interactive auth (make them
-  public).
+- The agent package must be pullable without interactive auth (make it public).
+  The gate is baked into the OS image, so it has no package of its own.
 - The disk is bound to the TPM at PCR 7 (Secure Boot state); a firmware/Secure
   Boot change invalidates the TPM keyslot — the recovery key is the way back in.
 

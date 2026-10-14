@@ -7,14 +7,16 @@ mental model and the gotchas.
 
 - **Build host** = the machine you build on (any host with podman + sudo).
 - **Agent box** = the separate target PC you install onto.
-- Four artifacts, produced on the build host:
+- Three artifacts, produced on the build host:
 
   | Artifact | Source | Lives / goes |
   | --- | --- | --- |
   | **agent image** (`ghcr.io/OWNER/agentbox-agent`) | `agent/` | a **registry**; the box pulls it at runtime |
-  | **gate image** (`ghcr.io/OWNER/agentbox-gate`) | `gate/` | a **registry**; the box pulls it at runtime |
   | **OS image** (`ghcr.io/OWNER/agentbox-os`) | `os/` | a **registry**; the box's `bootc upgrade` pulls it |
   | **installer ISO** (`output/install.iso`) | `os/iso/` | flashed/booted to lay down the OS |
+
+  The **gate** (claim UI + vault proxy, `gate/`) is not an artifact: it is a
+  static Go binary compiled into the OS image (see `os/Containerfile`).
 
 - The host OS image is tiny (podman + systemd + quadlets). The XFCE desktop and
   both brokers (Agent Vault, Tailscale) run as **containers**.
@@ -39,9 +41,10 @@ LOCAL=1 ./build.sh installer     # prompts for sudo; -> output/install.iso
 ```
 - Builds the OS image + installer ISO **offline**; `sudo` required (rootful
   podman, the builder mounts devtmpfs).
-- Won't give a working **desktop**: the installed box pulls the agent/gate
-  images from the registry and `bootc upgrade` points at `localhost` (both fail
-  by design with `LOCAL=1`). Everything up to the claim still exercises.
+- Won't give a working **desktop**: the installed box pulls the agent image from
+  the registry and `bootc upgrade` points at `localhost` (both fail by design
+  with `LOCAL=1`). Everything up to the claim still exercises - the gate is
+  baked into the OS image, so the claim UI does come up.
 
 #### Boot it with a TPM (qemu + swtpm)
 
@@ -81,10 +84,12 @@ What to check, in order:
 6. **Result**: the page shows the vault URL, desktop + Paseo passwords, and the
    recovery key. Then `ssh <user>@<ip> sudo agentbox status`.
 
-Caveats / expected failures in this offline test: the agent/gate UI will not
-come up (images not pullable), and `sudo agentbox up` will fail at
-`podman pull`. That's the registry gap, not a bug — it is covered by a real
-`OWNER=<ns> ./build.sh` deploy (§3).
+The whole claim path works with `LOCAL=1`: the gate is baked into the OS image,
+so the claim UI, finalize, and the result page (passwords + recovery key) all
+run. The only thing missing offline is the **desktop container** - the agent
+image is not pullable, so `sudo agentbox up` fails at `podman pull` and the
+agentbox desktop never starts. That is the registry gap, not a bug; it is
+covered by a real `OWNER=<ns> ./build.sh` deploy (§3).
 
 Reboot to re-verify TPM unlock: stop qemu and restart it with the **same**
 `/tmp/ab/tpm` state and **without** `-cdrom`/`-boot d`.
@@ -93,8 +98,7 @@ Reboot to re-verify TPM unlock: stop qemu and restart it with the **same**
 1. **Registry** with the images:
    ```sh
    OWNER=<namespace> ./build.sh agent     # push agent image
-   OWNER=<namespace> ./build.sh gate      # push gate image
-   OWNER=<namespace> ./build.sh os        # push OS image
+   OWNER=<namespace> ./build.sh os        # push OS image (gate is baked in)
    OWNER=<namespace> ./build.sh installer # pulls OS ref; bakes it as update source
    ```
    Pushing to GHCR needs **`packages: write`**. The local GitHub App token can
@@ -102,9 +106,9 @@ Reboot to re-verify TPM unlock: stop qemu and restart it with the **same**
    organization package`) — so push from **CI**, whose built-in `GITHUB_TOKEN`
    has it (no PAT). See `.github/workflows/build.yml`; it tags `:edge` while
    testing.
-2. **CI**: `.github/workflows/build.yml` builds+pushes the agent, gate and OS
-   images on `main`, uploads `install.iso` as an artifact, and keyless-signs all
-   three with cosign (then self-verifies the signatures).
+2. **CI**: `.github/workflows/build.yml` builds+pushes the agent and OS images
+   on `main`, uploads `install.iso` as an artifact, and keyless-signs both with
+   cosign (then self-verifies the signatures).
 3. **Runtime updates**: `bootc upgrade` (OS) + `podman-auto-update.timer` (agent).
 4. **Private packages** → `agentbox setup` takes a GHCR username + read-only
    token, stores them in the vault; `provision` writes `/etc/containers/auth.json`
@@ -167,9 +171,10 @@ allows password login, so the very first login uses the installer password.
 ## Repo layout
 ```
 agent/      agent desktop image (Containerfile, opencode.json, nginx.conf, start-agent.sh)
-gate/       gate image (TLS claim UI + vault reverse proxy; --qr for the console)
+gate/       gate source (TLS claim UI + vault reverse proxy; --qr for the console),
+            compiled into the OS image - not an image of its own
 os/         bootc OS image
-  Containerfile            COPY payload + enable units
+  Containerfile            build the gate + COPY payload + enable units
   iso/                     bootc-generic-iso installer container
     Containerfile
     build.sh               Anaconda + EFI tree + disk picker + kickstart (TPM + recovery)
@@ -182,8 +187,8 @@ os/         bootc OS image
     usr/lib/bootc/install/ bootc install defaults (root fs)
     usr/share/containers/systemd/  quadlets
     usr/share/agentbox/    static firewall policy, MCP config, tailscale serve config
-build.sh    agent | gate | os | installer
-deploy.sh   os (build+push :dev, bootc switch) | agent | gate
+build.sh    agent | os | installer
+deploy.sh   os (build+push :dev, bootc switch) | agent
 ```
 
 Static image payload lives in `/usr` (immutable, versioned). `/etc` holds only

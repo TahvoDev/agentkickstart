@@ -1,0 +1,29 @@
+[Unit]
+Description=agentbox gate (TLS claim UI + Agent Vault proxy)
+Documentation=man:agentbox(1)
+# Fronts the host-published vault on 127.0.0.1:14331: serves the one-time claim
+# UI until the box is claimed, then reverse-proxies the vault UI/API. Baked into
+# the image as a static binary (no container).
+Requires=agent-vault.service
+After=agent-vault.service systemd-tmpfiles-setup.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/agentbox/agentbox-gate
+Environment=AGENTBOX_VAULT_URL=http://127.0.0.1:14331
+Restart=always
+RestartSec=3
+# Runs as root (it writes the root-owned run dir); keep only the capability it
+# needs to bind :443.
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+# Static binary; the only writable state is the live run dir.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/run/agentbox
+MemoryMax=128M
+
+[Install]
+WantedBy=multi-user.target
