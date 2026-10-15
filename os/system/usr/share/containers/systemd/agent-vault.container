@@ -26,7 +26,7 @@ Environment=AGENT_VAULT_TELEMETRY=false
 EnvironmentFile=/etc/agent-vault/master.env
 # Admin API/UI: localhost only. The :14322 proxy is deliberately
 # not published; agents reach it over the private network.
-PublishPort=127.0.0.1:14321:14321
+PublishPort=127.0.0.1:14331:14321
 Volume=/var/lib/agent-vault:/data:Z
 
 [Service]
