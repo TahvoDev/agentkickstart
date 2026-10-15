@@ -78,6 +78,7 @@ text
 @STORAGE@
 rootpw --lock
 bootc --source-imgref containers-storage:PAYLOAD_REF --target-imgref PAYLOAD_REF
+reboot
 
 %post --interpreter=/bin/bash --erroronfail
 root=$(findmnt -n -o SOURCE /)
