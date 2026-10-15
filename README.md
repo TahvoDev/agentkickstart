@@ -1,8 +1,6 @@
 # agentkickstart
 
-> **Prototype / experimental.** A work in progress, subject to breaking changes
-> without notice. **Not** intended for production use. Back up anything important
-> and expect rough edges. Licensed AGPL-3.0 (see `LICENSE`).
+> **Prototype / experimental.** This is an incomplete experiment, not intended for use yet!
 
 A bootc image (plus its containers) that turns a PC into a self-contained **agent
 box**: Paseo + OpenCode agents on a real XFCE desktop (Xvfb + noVNC), reached
