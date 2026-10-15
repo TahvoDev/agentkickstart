@@ -21,7 +21,7 @@ RUN go mod download
 COPY gate/*.go ./
 RUN CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o /out/agentbox-gate .
 
-FROM quay.io/fedora/fedora-bootc:44@sha256:22a5e3fb9e5587189144ac0ef321e153662580bfb411022f55becdae9141f114
+FROM quay.io/fedora/fedora-bootc:44@sha256:2cdd9f75bdcfb2c0cbbd3c86942d3c1aef8ec0bd842e3fcdf884995887681f2e
 
 # The base already ships podman, nftables, jq, curl and openssh-server
 # (verified on fc44). Add shim-x64/grub2-efi-x64: the installer ISO build
