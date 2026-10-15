@@ -10,8 +10,9 @@ Type=oneshot
 RemainAfterExit=yes
 # Derive the MCP allowlist, then apply base policy + derived MCP overlay as one
 # atomic nft transaction, so a bad allowlist cannot leave the table missing or
-# half-applied.
-ExecStart=/bin/bash -c '/usr/libexec/agentbox/agentbox-egress || true; { for f in /usr/share/agentbox/firewall.nft /etc/agentbox/firewall.mcp.nft; do if [ -s "$f" ]; then cat "$f"; fi; done; } > /run/agentbox-firewall.nft; /usr/sbin/nft -f /run/agentbox-firewall.nft'
+# half-applied. Feed nft on stdin: nft runs as iptables_t under SELinux and is
+# denied reading a ruleset file dropped in /run (initrc_var_run_t).
+ExecStart=/bin/bash -c '/usr/libexec/agentbox/agentbox-egress || true; { for f in /usr/share/agentbox/firewall.nft /etc/agentbox/firewall.mcp.nft; do if [ -s "$f" ]; then cat "$f"; fi; done; } | /usr/sbin/nft -f -'
 ExecStop=-/usr/sbin/nft delete table inet agentbox
 
 [Install]
