@@ -43,6 +43,12 @@ ln -s /usr/lib/systemd/system/anaconda-shell@.service /usr/lib/systemd/system/au
 mkdir -p /usr/lib/systemd/logind.conf.d
 printf '[Login]\nReserveVT=2\n' > /usr/lib/systemd/logind.conf.d/anaconda-shell.conf
 
+# The disk picker prompts on the console. systemd's job-status spinner rewrites
+# the same line every second, so the typed answer gets overwritten and garbled.
+# Hide it; Anaconda's own UI is unaffected.
+mkdir -p /etc/systemd/system.conf.d
+printf '[Manager]\nShowStatus=no\n' > /etc/systemd/system.conf.d/10-agentbox-installer.conf
+
 # --- erase-and-go kickstart ------------------------------------------------
 #
 # The kickstart Anaconda loads is REWRITTEN just before Anaconda starts, by the
@@ -122,8 +128,11 @@ if [ -n "$target" ]; then
   [ -b "$target" ] || fail "agentbox.target=$target is not a block device"
   pick=$target
 else
+  # Real, erasable disks only: skip removable/hotplug/USB and the pseudo-disks
+  # (zram counts as type "disk"; loop/sr are other types but name-check anyway).
   mapfile -t devs < <(lsblk -J -d -o NAME,TYPE,RM,TRAN,HOTPLUG 2>/dev/null | jq -r '
-    .blockdevices[] | select(.type=="disk" and .rm==false and .hotplug==false and ((.tran//"")!="usb")) | "/dev/"+.name')
+    .blockdevices[] | select(.type=="disk" and .rm==false and .hotplug==false and ((.tran//"")!="usb")
+      and (.name|test("^(zram|loop|sr|fd|ram|dm-|md)")|not)) | "/dev/"+.name')
   info() { lsblk -J -d -o MODEL,SIZE "$1" 2>/dev/null | jq -r '.blockdevices[0] | "\(.model // "disk")  \(.size)"'; }
   [ "${#devs[@]}" -gt 0 ] || fail "no internal disk found; refusing to guess"
   if [ "${#devs[@]}" -eq 1 ]; then
