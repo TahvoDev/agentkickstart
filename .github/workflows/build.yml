@@ -164,21 +164,19 @@ jobs:
           IB_METRICS: "1"
         run: ./build.sh installer
 
-      # Publish the ISO on the rolling `edge` prerelease. Create it once, then
-      # replace the asset each build (stable download URL:
-      # .../releases/download/edge/install.iso). Uses the preinstalled gh CLI, no
+      # Publish the ISO on the rolling `edge` prerelease. Recreate it each build
+      # so the release date reflects the latest build (editing in place keeps the
+      # original published date and the page looks stale). Stable download URL:
+      # .../releases/download/edge/install.iso. Uses the preinstalled gh CLI, no
       # extra action. NB: release assets cap at 2 GiB; install.iso is ~1.6 GiB.
       - name: publish installer ISO to the 'edge' release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view edge >/dev/null 2>&1; then
-            gh release edit edge --notes "Rolling edge build from ${GITHUB_SHA} ($(date -u +%Y-%m-%dT%H:%MZ))."
-          else
-            gh release create edge --prerelease --target "$GITHUB_SHA" \
-              --title "agentbox installer (edge)" \
-              --notes "Rolling edge build from ${GITHUB_SHA}."
-          fi
-          gh release upload edge output/install.iso --clobber
+          gh release delete edge --yes --cleanup-tag 2>/dev/null || true
+          gh release create edge --prerelease --target "$GITHUB_SHA" \
+            --title "agentbox installer (edge)" \
+            --notes "Rolling edge build from ${GITHUB_SHA} ($(date -u +%Y-%m-%dT%H:%MZ))."
+          gh release upload edge output/install.iso
           gh release view edge --json assets \
             -q '.assets[] | select(.name=="install.iso") | "\(.name) \(.size) bytes"'
