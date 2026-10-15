@@ -57,6 +57,12 @@ printf '[Manager]\nShowStatus=no\n' > /etc/systemd/system.conf.d/10-agentbox-ins
 # %include for this - kickstart %include is expanded at parse time, before
 # %pre runs - so the picker rewrites the whole kickstart instead.
 #
+# The picker writes /run/install/ks.cfg, NOT the interactive-defaults path.
+# startup_utils.find_kickstart sets flags.automatedInstall only for inst.ks and
+# for /run/install/ks.cfg; via the interactive-defaults path Anaconda stays in
+# the TUI and blocks on the spokes - root is locked and no user is created, so
+# the root-password/user spokes can never be satisfied and it refuses to proceed.
+#
 # The leading 'text' is load-bearing. Anaconda loads this file as the kickstart
 # when no inst.ks is given, and a 'text' *from kickstart* sets
 # DisplayModeTextKickstarted, which suppresses the interactive RDP question in
@@ -86,8 +92,8 @@ systemd-cryptenroll --recovery-key "$cryptdev" | tee /root/recovery-key.txt
 %end
 EOF
 sed -i "s|PAYLOAD_REF|${payload_ref}|g" /usr/libexec/agentbox-installer/kickstart.tmpl
-# A default (interactive-storage) kickstart so the RDP workaround still applies
-# if the picker never rewrites it.
+# A default kickstart so the RDP workaround still applies if the picker never
+# writes /run/install/ks.cfg (storage then stays interactive - fail loud).
 sed 's|^@STORAGE@$||' /usr/libexec/agentbox-installer/kickstart.tmpl > /usr/share/anaconda/interactive-defaults.ks
 
 cat > /usr/libexec/agentbox-installer/pick-disk <<'EOF'
@@ -98,7 +104,7 @@ cat > /usr/libexec/agentbox-installer/pick-disk <<'EOF'
 # environment variable AGENTBOX_TARGET) skips the prompt.
 set -uo pipefail
 tmpl=/usr/libexec/agentbox-installer/kickstart.tmpl
-ks=/usr/share/anaconda/interactive-defaults.ks
+ks=/run/install/ks.cfg
 
 mapfile -t CONSOLES < <(for c in $(cat /sys/class/tty/console/active 2>/dev/null); do printf '/dev/%s\n' "$c"; done)
 [ "${#CONSOLES[@]}" -gt 0 ] || CONSOLES=(/dev/console)
@@ -156,6 +162,7 @@ fi
 storage="ignoredisk --only-use=$pick
 clearpart --all --initlabel --disklabel=gpt --drives=$pick
 autopart --fstype=xfs --encrypted --passphrase=$(rand)"
+mkdir -p /run/install
 awk -v s="$storage" '{ print ($0=="@STORAGE@") ? s : $0 }' "$tmpl" > "$ks"
 emit "agentbox: erasing $pick and installing; this can take several minutes."
 EOF
