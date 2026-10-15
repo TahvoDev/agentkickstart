@@ -146,7 +146,7 @@ fi
 
 storage="ignoredisk --only-use=$pick
 clearpart --all --initlabel --disklabel=gpt --drives=$pick
-autopart --type=xfs --encrypted --passphrase=$(rand)"
+autopart --fstype=xfs --encrypted --passphrase=$(rand)"
 awk -v s="$storage" '{ print ($0=="@STORAGE@") ? s : $0 }' "$tmpl" > "$ks"
 emit "agentbox: erasing $pick and installing; this can take several minutes."
 EOF
